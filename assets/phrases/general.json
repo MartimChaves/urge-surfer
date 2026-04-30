@@ -1,0 +1,33 @@
+{
+  "id": "general",
+  "language": "en",
+  "version": 1,
+  "notes": "Phrases organized by Kristin Neff's three components of self-compassion. Keep phrases short (≤25 chars including punctuation) so a single phrase fits in a few minutes of weighted-tracing drawing. Avoid superlatives, worth-claims, and prescriptive demands. See CONTRIBUTING.md for review criteria.",
+  "phrases": [
+    { "text": "This is a hard moment.",      "component": "mindfulness" },
+    { "text": "I notice this urge.",         "component": "mindfulness" },
+    { "text": "This wave will pass.",        "component": "mindfulness" },
+    { "text": "Right now feels heavy.",      "component": "mindfulness" },
+    { "text": "I can sit with this.",        "component": "mindfulness" },
+    { "text": "The wave is here.",           "component": "mindfulness" },
+    { "text": "I am here, breathing.",       "component": "mindfulness" },
+    { "text": "This moment will end.",       "component": "mindfulness" },
+
+    { "text": "Many feel this too.",         "component": "common-humanity" },
+    { "text": "I am not alone.",             "component": "common-humanity" },
+    { "text": "Others have stood here.",     "component": "common-humanity" },
+    { "text": "This is human.",              "component": "common-humanity" },
+    { "text": "We all have urges.",          "component": "common-humanity" },
+    { "text": "This pain is shared.",        "component": "common-humanity" },
+    { "text": "Many step back here.",        "component": "common-humanity" },
+
+    { "text": "I can be gentle.",            "component": "self-kindness" },
+    { "text": "May I be kind.",              "component": "self-kindness" },
+    { "text": "I will hold this softly.",    "component": "self-kindness" },
+    { "text": "Let me be patient.",          "component": "self-kindness" },
+    { "text": "I am safe to feel.",          "component": "self-kindness" },
+    { "text": "Slow is okay.",               "component": "self-kindness" },
+    { "text": "Breathe and rest.",           "component": "self-kindness" },
+    { "text": "I am with myself.",           "component": "self-kindness" }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "betting",
+  "language": "en",
+  "version": 1,
+  "notes": "Phrases for the betting / gambling urge module. Same review criteria as general.json. Avoid moralizing language; the user has not failed by feeling the urge.",
+  "phrases": [
+    { "text": "The bet is not now.",         "component": "mindfulness" },
+    { "text": "I see the pull.",             "component": "mindfulness" },
+    { "text": "The board is just light.",    "component": "mindfulness" },
+    { "text": "Nothing is decided yet.",     "component": "mindfulness" },
+    { "text": "This urge is here.",          "component": "mindfulness" },
+
+    { "text": "Others surf this wave.",      "component": "common-humanity" },
+    { "text": "Many step back here.",        "component": "common-humanity" },
+    { "text": "This is a known struggle.",   "component": "common-humanity" },
+    { "text": "I am one of many.",           "component": "common-humanity" },
+
+    { "text": "I can pause before a bet.",   "component": "self-kindness" },
+    { "text": "My choice is mine.",          "component": "self-kindness" },
+    { "text": "This wave does not own me.",  "component": "self-kindness" },
+    { "text": "My calm is my own.",          "component": "self-kindness" },
+    { "text": "I am more than the odds.",    "component": "self-kindness" }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "scrolling",
+  "language": "en",
+  "version": 1,
+  "notes": "Phrases for the doomscrolling / compulsive-app-checking urge module. Same review criteria as general.json.",
+  "phrases": [
+    { "text": "The itch is not the need.",   "component": "mindfulness" },
+    { "text": "I notice the pull.",          "component": "mindfulness" },
+    { "text": "The feed will wait.",         "component": "mindfulness" },
+    { "text": "The pull is just a pull.",    "component": "mindfulness" },
+
+    { "text": "Many feel this itch.",        "component": "common-humanity" },
+    { "text": "The pull is built in.",       "component": "common-humanity" },
+    { "text": "We are all pulled to look.",  "component": "common-humanity" },
+
+    { "text": "My time is mine to keep.",    "component": "self-kindness" },
+    { "text": "I can put the phone down.",   "component": "self-kindness" },
+    { "text": "My eyes can rest.",           "component": "self-kindness" },
+    { "text": "I deserve quiet.",            "component": "self-kindness" }
+  ]
+}
