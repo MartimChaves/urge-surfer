@@ -192,6 +192,56 @@ The split between `setFingerTarget` (gesture-pushed) and `tick` (ticker-pulled) 
 - After completion, moving the finger backwards does not decrease `templateIndex`.
 - `tick(Duration.zero)` and `tick(<negative>)` are no-ops.
 
+## Ritual UI (vertical slice)
+
+The first end-to-end UI proves the foundation pieces wire together: DB on real device, Riverpod threading, gesture → controller → painter, ritual completion writes a wave that shows up in the ledger. Intentionally narrow: one hardcoded module, one hardcoded phrase, stubbed letter templates, no timer, no money entry, no onboarding.
+
+### Layout
+
+- `lib/main.dart` — bootstrap. Opens the database synchronously (`AppDatabase.open()` returns immediately; the underlying connection is opened lazily on first use), wraps the app in a `ProviderScope` overriding `appDatabaseProvider`.
+- `lib/app/app.dart` — `MaterialApp.router` + `GoRouter` with two routes: `/` → `LedgerScreen`, `/ritual` → `RitualFlowScreen`.
+- `lib/app/providers.dart` — Riverpod scope. Three providers: `appDatabaseProvider` (overridden in `main` and tests), `seedModuleIdProvider` (idempotent first-run seed of one module), `waveTotalCountProvider` (UI-bound count).
+- `lib/ui/ledger/ledger_screen.dart` — total count + "Start a wave" button. Force-watches `seedModuleIdProvider` so the seed runs at startup, before the user can tap into the ritual flow. Invalidates `waveTotalCountProvider` when the ritual screen pops.
+- `lib/ui/ritual/ritual_flow_screen.dart` — sequential step machine: `nameUrge → preSlider → drawing → postSlider`. State lives in widget-local `setState` for the slice; promotion to a Riverpod `Notifier` happens when multi-phrase scheduling and the timer enter the picture.
+- `lib/ui/ritual/widgets/drawing_canvas.dart` — wires `WeightedTracingController` to a `Ticker` (frame updates), a `GestureDetector` (finger target), and a `CustomPainter` (template, completed segment, pen). Uses a `ValueKey(letterIndex)` from the parent so each letter gets a fresh state via Flutter's reconciliation, rather than `didUpdateWidget` plumbing.
+- `lib/domain/ritual/stub_glyphs.dart` — placeholder template path (one horizontal line, 20 sample points, 80 px wide) for any character. Real Latin paths land later without changing any UI code.
+
+### Hardcoded for the slice
+
+- **Phrase**: `"I can be gentle."` (string literal in `ritual_flow_screen.dart`). JSON-loaded phrase rotation is a later concern.
+- **Module**: a single seeded row, name `"betting"`, `moneyTracked: false`, `phraseSet: "general"`. Created by `seedModuleIdProvider` on first run if no modules exist; reused thereafter. The `moneyTracked: false` choice keeps the slice tight by skipping the money-entry screen.
+
+### Testing
+
+- `test/widget_test.dart` — two `LedgerScreen` smoke tests against an in-memory `AppDatabase`: zero-state shows "0 waves surfed", and after one inserted wave shows "1 wave surfed" (verifying both the count read and the singular/plural pluralization branch).
+- Gesture-chain widget tests (pan-drag through the drawing canvas) are deferred. They are doable with `WidgetTester.timedDrag` but slow and finicky; the controller's behavior is already locked in by `weighted_tracing_controller_test.dart`, and the canvas wiring is best verified end-to-end on a real device.
+
+### Manual verification (must run on a device or simulator)
+
+`flutter run` and confirm:
+
+1. The app boots to the ledger showing `0 / waves surfed`.
+2. Tap "Start a wave" → ritual screen, "What do you want to do right now?" prompt.
+3. Type something, tap Next → pre-slider; pick a value 0–10, Next.
+4. Drawing screen: each letter of the phrase appears as a faint horizontal underline; dragging a finger left-to-right across it advances the pen, the completed segment darkens, and the next letter appears when the pen reaches the end. Faster finger movement leaves the pen lagging behind — the "weighted" feel.
+5. After the last letter, post-slider; pick a value, "Log wave".
+6. Back at the ledger, the count is `1`. Kill the app and relaunch — count stays at `1` (encryption + persistence both working).
+
+### What this layer does NOT yet have
+
+- Onboarding (welcome, module setup, intention writing, prominence prompt).
+- Multi-module picker.
+- Money-tracked entry screen.
+- Ritual timer (3–10 min).
+- Breathing pacer animation.
+- Ledger details (per-module breakdown, money saved, timeline, goal progress).
+- Real Latin glyph paths.
+- Weekly check-in prompts.
+- Settings screen.
+- Theming pass beyond default Material 3 with a deep-purple seed.
+
+These all land in step 7 (breadth fill-in) and step 8 (glyph data).
+
 ## Open infrastructure concerns
 
 - **gradlew not committed.** The project `.gitignore` excludes `**/android/gradlew` and `**/android/gradle/wrapper/gradle-wrapper.jar`. Flutter regenerates gradle wrapper artifacts from `flutter create`, so this is workable, but contributors will need to run `flutter create .` (or equivalent) once on checkout. Reconsider if it causes friction.
