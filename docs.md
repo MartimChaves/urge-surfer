@@ -36,6 +36,7 @@ Standard Flutter app, scaffolded with `flutter create --platforms ios,android`. 
 | `flutter_secure_storage` | Stores the DB encryption key in Android Keystore / iOS Keychain. |
 | `go_router` | Declarative routing. |
 | `path_provider` | Locates a writable directory for the DB file. |
+| `path` | Cross-platform path joining (`p.join(...)`) when constructing the DB file path. |
 
 ## Dev dependencies
 
@@ -86,6 +87,65 @@ When integration_test infrastructure lands, this layer should be added.
 - `dart:io` symbols anywhere in `lib/`: `HttpClient`, `Socket`, `RawSocket`, `ServerSocket`, `RawDatagramSocket`, `WebSocket`. (Other `dart:io` APIs — `File`, `Directory`, `Platform` — are fine.)
 
 If a future feature genuinely requires one of these (e.g., serving an in-app local web view), the right move is to discuss the threat model in a PR description, not to silently relax `tool/check_no_network.sh`.
+
+## Database & encryption
+
+The persistence layer lives under `lib/data/db/` and `lib/data/secure/`.
+
+### Schema (v1)
+
+Four tables, single schema version. All defined in `lib/data/db/tables.dart`.
+
+- **`Modules`** — one row per urge the user wants to surf. Columns: `id`, `name`, `moneyTracked` (bool), `defaultAmount` (nullable int), `phraseSet`, `goalCount` (nullable int), `goalAmount` (nullable int), `createdAt`, `archivedAt` (nullable). Goals are modeled as two nullable columns rather than a separate `Goal` table — single goal per module v1, mutually exclusive at the UX layer. If goal history or multi-goal lands, migrate to a separate table at that point.
+- **`Waves`** — one row per surfed wave. Columns: `id`, `moduleId` (FK), `urgeText`, `urgeBefore` (int 0–10), `urgeAfter` (int 0–10), `amount` (nullable int — minor units), `createdAt`. Waves never delete and never reset.
+- **`Intentions`** — the user-written if-then plan per module. Columns: `id`, `moduleId` (FK), `body`, `createdAt`. (`body` rather than `text` because `text` collides with Drift's `Table.text` method.)
+- **`WeeklyCheckins`** — DARN-style prompt + free-text response. Columns: `id`, `promptKey`, `responseText`, `createdAt`.
+
+### Money
+
+Amounts are integers in **minor units** (e.g., cents). Floats are never used for money. V1 assumes a single user-locale currency; no currency code is stored. If the app is ever localized for currencies that don't decimalize the same way, this assumption needs revisiting.
+
+### DAOs
+
+Currently only the methods needed by tests exist:
+
+- `ModuleDao`: `insertModule`, `getAllActive`.
+- `WaveDao`: `insertWave`, `getAllByModule` (newest-first), `totalCount`, `totalCountByModule`, `sumAmountByModule` (null-safe).
+
+DAOs grow with UI demand, not speculatively.
+
+### Encryption (SQLite3MultipleCiphers)
+
+`package:sqlite3 ^3.x` bundles SQLite3MultipleCiphers via the `hooks.user_defines.sqlite3.source: sqlite3mc` block in `pubspec.yaml`. The DB is opened with `NativeDatabase.createInBackground` (Drift recommended; runs DB on a background isolate), and a `PRAGMA key = '<base64>';` is issued in the connection setup callback. An `assert(_debugCheckHasCipher(...))` confirms in debug builds that the bundled binary actually supports encryption.
+
+### Key lifecycle
+
+`lib/data/secure/db_key.dart` (`DbKeyStore.getOrCreate`):
+
+- First open: 32 bytes from `Random.secure()`, base64-encoded, stored under `urge_surfer_db_key` in `flutter_secure_storage`. Base64 keeps the value SQL-metacharacter-free, so it can be interpolated into the `PRAGMA key = '...'` string without escaping.
+- Subsequent opens: read from `flutter_secure_storage`, return as-is.
+- iOS Keychain accessibility class: the `flutter_secure_storage` default (`kSecAttrAccessibleWhenUnlocked`) — key only readable while the device is unlocked.
+- No "regenerate key" / "wipe data" UX in v1. Clearing app data on Android also clears the Keystore-bound entry (fresh-install behavior). On iOS, the Keychain entry survives uninstall, but the encrypted DB file is gone with the app, making the lingering entry meaningless.
+
+### Code generation
+
+Drift uses `build_runner` for codegen. Generated files (`*.g.dart`) are gitignored, so contributors and CI must run:
+
+```
+dart run build_runner build --delete-conflicting-outputs
+```
+
+after `flutter pub get` and before `flutter analyze`. CI does this in `.github/workflows/ci.yml`.
+
+### Tests
+
+`test/data/db/wave_dao_test.dart` exercises the WaveDao contract against an in-memory `NativeDatabase.memory()`. In-memory SQLite is the same engine as on-disk — these are real-DB tests, not mocks. Cases: insert + read; totalCount across modules; per-module count isolation; sum ignores nulls; sum returns 0 on empty; cross-module query isolation; ordering newest-first.
+
+### What this layer does NOT yet test
+
+- **Encryption round-trip on a real file.** Writing with key A, closing, reopening without a key (expect failure) and with key A (expect success). Requires the bundled sqlite3mc native libs to be available to `flutter test` on the host — works in principle on Linux/macOS, fragile in practice. Deferred to integration_test on real devices.
+- **`DbKeyStore` behavior.** `flutter_secure_storage` requires a Flutter platform channel; the WaveDao tests bypass it by passing an explicit in-memory database to `AppDatabase`. Behavior verification waits for integration_test.
+- **Migration logic.** Schema is version 1 and only version 1; no `MigrationStrategy` until the schema changes.
 
 ## Open infrastructure concerns
 
