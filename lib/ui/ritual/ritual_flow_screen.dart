@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../data/db/database.dart';
-import '../../domain/ritual/stub_glyphs.dart';
+import '../../domain/drawing/glyphs/word_composer.dart';
 import 'widgets/drawing_canvas.dart';
 
 const String _phrase = 'I can be gentle.';
@@ -23,10 +23,12 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
   final _urgeController = TextEditingController();
   int _urgeBefore = 5;
   int _urgeAfter = 5;
-  int _letterIndex = 0;
+  int _wordIndex = 0;
 
-  late final List<String> _letters =
-      _phrase.split('').where((c) => c.trim().isNotEmpty).toList();
+  late final List<String> _words = _phrase
+      .split(' ')
+      .where((w) => w.isNotEmpty)
+      .toList();
 
   @override
   void dispose() {
@@ -40,9 +42,9 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
     });
   }
 
-  void _onLetterComplete() {
-    if (_letterIndex < _letters.length - 1) {
-      setState(() => _letterIndex++);
+  void _onWordComplete() {
+    if (_wordIndex < _words.length - 1) {
+      setState(() => _wordIndex++);
     } else {
       _advance();
     }
@@ -85,9 +87,9 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
               ),
             _Step.drawing => _DrawingStep(
                 phrase: _phrase,
-                letterIndex: _letterIndex,
-                letters: _letters,
-                onLetterComplete: _onLetterComplete,
+                wordIndex: _wordIndex,
+                words: _words,
+                onWordComplete: _onWordComplete,
               ),
             _Step.postSlider => _SliderStep(
                 question: 'How strong is the urge now?',
@@ -186,32 +188,33 @@ class _SliderStep extends StatelessWidget {
 
 class _DrawingStep extends StatelessWidget {
   final String phrase;
-  final int letterIndex;
-  final List<String> letters;
-  final VoidCallback onLetterComplete;
+  final int wordIndex;
+  final List<String> words;
+  final VoidCallback onWordComplete;
   const _DrawingStep({
     required this.phrase,
-    required this.letterIndex,
-    required this.letters,
-    required this.onLetterComplete,
+    required this.wordIndex,
+    required this.words,
+    required this.onWordComplete,
   });
 
   @override
   Widget build(BuildContext context) {
+    final word = words[wordIndex];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Text(phrase, style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 8),
         Text(
-          'Letter ${letterIndex + 1} of ${letters.length}: ${letters[letterIndex]}',
+          'Word ${wordIndex + 1} of ${words.length}: "$word"',
           style: Theme.of(context).textTheme.bodyLarge,
         ),
         const Spacer(),
         DrawingCanvas(
-          key: ValueKey(letterIndex),
-          templatePoints: stubTemplateForChar(letters[letterIndex]),
-          onLetterComplete: onLetterComplete,
+          key: ValueKey(wordIndex),
+          templatePoints: composeWord(word),
+          onLetterComplete: onWordComplete,
         ),
         const Spacer(),
       ],

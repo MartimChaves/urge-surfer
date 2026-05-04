@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import '../../../domain/drawing/glyphs/word_composer.dart';
 import '../../../domain/drawing/weighted_tracing_controller.dart';
 
 class DrawingCanvas extends StatefulWidget {
@@ -13,8 +14,8 @@ class DrawingCanvas extends StatefulWidget {
     super.key,
     required this.templatePoints,
     required this.onLetterComplete,
-    this.width = 280,
-    this.height = 240,
+    this.width = 320,
+    this.height = 320,
   });
 
   @override
@@ -31,14 +32,22 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   @override
   void initState() {
     super.initState();
-    final pathWidth = widget.templatePoints.last.dx -
-        widget.templatePoints.first.dx;
-    final dx = (widget.width - pathWidth) / 2;
-    final dy = widget.height / 2;
+    // Vertically center the path within the canvas. Horizontal positioning is
+    // handled per-frame by the pan-scroll transform — the path stays in world
+    // coords (x=0 is the start of the word).
+    final ys = widget.templatePoints.map((p) => p.dy);
+    final yMin = ys.reduce((a, b) => a < b ? a : b);
+    final yMax = ys.reduce((a, b) => a > b ? a : b);
+    final dy = widget.height / 2 - (yMin + yMax) / 2;
     final centered = widget.templatePoints
-        .map((p) => Offset(p.dx + dx, p.dy + dy))
+        .map((p) => Offset(p.dx, p.dy + dy))
         .toList();
-    _controller = WeightedTracingController(templatePoints: centered);
+    _controller = WeightedTracingController(
+      templatePoints: centered,
+      // advanceThreshold scales with the glyph scale so the pen advances at
+      // the same perceived rate regardless of how points are scaled up.
+      advanceThreshold: 8.0 * defaultGlyphScale,
+    );
     _ticker = createTicker(_onTick)..start();
   }
 
@@ -55,6 +64,11 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     }
   }
 
+  double get _panOffsetX => widget.width / 2 - _controller.penPosition.dx;
+
+  Offset _toWorld(Offset local) =>
+      Offset(local.dx - _panOffsetX, local.dy);
+
   @override
   void dispose() {
     _ticker.dispose();
@@ -65,17 +79,20 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   Widget build(BuildContext context) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onPanStart: (d) => _controller.setFingerTarget(d.localPosition),
-      onPanUpdate: (d) => _controller.setFingerTarget(d.localPosition),
+      onPanStart: (d) => _controller.setFingerTarget(_toWorld(d.localPosition)),
+      onPanUpdate: (d) => _controller.setFingerTarget(_toWorld(d.localPosition)),
       child: SizedBox(
         width: widget.width,
         height: widget.height,
-        child: CustomPaint(
-          painter: _TracingPainter(
-            templatePoints: _controller.templatePoints,
-            penPosition: _controller.penPosition,
-            templateIndex: _controller.templateIndex,
-            seedColor: Theme.of(context).colorScheme.primary,
+        child: ClipRect(
+          child: CustomPaint(
+            painter: _TracingPainter(
+              templatePoints: _controller.templatePoints,
+              penPosition: _controller.penPosition,
+              templateIndex: _controller.templateIndex,
+              panOffsetX: _panOffsetX,
+              seedColor: Theme.of(context).colorScheme.primary,
+            ),
           ),
         ),
       ),
@@ -87,12 +104,14 @@ class _TracingPainter extends CustomPainter {
   final List<Offset> templatePoints;
   final Offset penPosition;
   final int templateIndex;
+  final double panOffsetX;
   final Color seedColor;
 
   _TracingPainter({
     required this.templatePoints,
     required this.penPosition,
     required this.templateIndex,
+    required this.panOffsetX,
     required this.seedColor,
   });
 
@@ -100,10 +119,14 @@ class _TracingPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (templatePoints.length < 2) return;
 
+    canvas.save();
+    canvas.translate(panOffsetX, 0);
+
     final templatePaint = Paint()
       ..color = seedColor.withValues(alpha: 0.18)
       ..strokeWidth = 10
       ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
     final fullPath = Path()
       ..moveTo(templatePoints.first.dx, templatePoints.first.dy);
@@ -117,6 +140,7 @@ class _TracingPainter extends CustomPainter {
         ..color = seedColor.withValues(alpha: 0.7)
         ..strokeWidth = 10
         ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
         ..style = PaintingStyle.stroke;
       final donePath = Path()
         ..moveTo(templatePoints.first.dx, templatePoints.first.dy);
@@ -128,9 +152,11 @@ class _TracingPainter extends CustomPainter {
 
     canvas.drawCircle(
       penPosition,
-      9,
+      10,
       Paint()..color = seedColor,
     );
+
+    canvas.restore();
   }
 
   @override
@@ -138,6 +164,7 @@ class _TracingPainter extends CustomPainter {
     return old.penPosition != penPosition ||
         old.templateIndex != templateIndex ||
         old.templatePoints != templatePoints ||
+        old.panOffsetX != panOffsetX ||
         old.seedColor != seedColor;
   }
 }

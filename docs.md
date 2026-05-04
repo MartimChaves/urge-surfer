@@ -242,6 +242,68 @@ The first end-to-end UI proves the foundation pieces wire together: DB on real d
 
 These all land in step 7 (breadth fill-in) and step 8 (glyph data).
 
+## Cursive glyph layer
+
+The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizontal underlines. The cursive glyph layer replaces the stub templates with real cursive paths, and switches the ritual flow from letter-indexed (one stub per letter) to **word-indexed** (one continuous stroke per word, with pen "lifts" only between words). Step 8a ships the minimum character set to render the slice phrase `"I can be gentle."` end-to-end (10 glyphs); step 8b will fill in the rest.
+
+### Layout
+
+- `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
+- `lib/domain/drawing/glyphs/cursive_glyphs.dart` — a `Map<String, CursiveGlyph>` with each glyph's bezier control points and advance width in unit coordinates.
+- `lib/domain/drawing/glyphs/word_composer.dart` — `composeWord(word, scale)` walks the chars, samples each glyph's beziers, translates by the cumulative advance, scales by `defaultGlyphScale = 3`, and emits one flat dense `List<Offset>` for the whole word.
+- `lib/ui/ritual/widgets/drawing_canvas.dart` — adds a per-frame **pan-scroll transform**: `panOffsetX = canvasWidth/2 − penPosition.dx`. The painter translates the canvas by `panOffsetX` so the pen stays near the horizontal center; gestures translate the local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
+- `lib/ui/ritual/ritual_flow_screen.dart` — splits the phrase on spaces into words; each word becomes one `DrawingCanvas` instance keyed by `wordIndex` (so reconciliation freshly reinitializes the controller and ticker per word).
+
+### Coordinate system
+
+Glyphs are authored in unit coordinates with this convention:
+
+- `x ∈ [0, advanceWidth]` left-to-right.
+- `y ∈ [0, 100]` top-to-bottom (Flutter Y).
+- Baseline at `y = 70`. x-height (top of `a`, `c`, `e`, `n`) at `y = 30`. Ascender top (`b`, `l`, `t`, `I`) at `y = 10`. Descender bottom (`g`) at `y = 95`.
+- Entry of every glyph is at `(0, ~65)`; exit is at `(advanceWidth, ~65)`. Adjacent letters meet at the same y-height by design — no explicit connector strokes between letters are needed; the entry up-swoop of each letter *is* the visual connector.
+
+`composeWord` scales these unit points by `defaultGlyphScale = 3` so the rendered letters are roughly 75–150 px wide and 255 px tall, which is large and readable on a phone screen.
+
+### The single-stroke design constraint
+
+Real schoolbook cursive lifts the pen for the dot on `i`/`j`, the crossbar on `t`/`f`, and the cross on `x`. Our `WeightedTracingController` is single-stroke per template and we don't want to extend it for v1. Resolution: each glyph is authored as one continuous stroke even when traditional cursive uses lifts.
+
+For example, the `t` in `cursive_glyphs.dart` does the descender, a small bottom curl, then loops upward to crossbar height before flowing right into the next letter. This is a recognized continuous-stroke calligraphy convention (closer to copperplate than to school cursive). It's a deliberate stylistic choice; if multi-stroke letters become important later (handwriting practice, ligatures, etc.), the controller needs a multi-stroke extension.
+
+### Pan-scroll
+
+The drawing canvas is 320×320 px by default. A typical word (`"gentle"`) at scale 3 is ~600 px wide — wider than the canvas. The pan-scroll transform keeps the pen near horizontal center: as the pen progresses through the word, the canvas pans left and completed letters scroll off the left edge. The user sees the active letter (and a peek of upcoming letters on the right) at large size. Vertical centering happens once at canvas init — the path's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
+
+Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before.
+
+### Word-indexed ritual flow
+
+`RitualFlowScreen` keeps `_wordIndex` instead of `_letterIndex`. The `_DrawingStep` widget renders the current word's full composed path via `composeWord(word)` and listens for the controller's `letterComplete` (which now means "word complete" — single-template-per-word). On word complete, advance `_wordIndex`; after the last word, advance to the post-slider step.
+
+`DrawingCanvas`'s parameter is still named `onLetterComplete` — the abstraction is "template complete," and the term hasn't been renamed. Worth a follow-up rename if it gets confusing.
+
+### advanceThreshold scaling
+
+`WeightedTracingController` defaults to `advanceThreshold = 8` in template-coord units. With the composer scaling all points by 3, the canvas constructs the controller with `advanceThreshold = 8 * defaultGlyphScale = 24` so the pen advances at the same perceived rate as before scaling. The `word_composer_test.dart` "no gaps wider than threshold" test guards the inverse property — sample density is fine enough that the pen never gets stuck between two template points.
+
+### Character set in step 8a
+
+`a, b, c, e, g, l, n, t, I, .` (plus space, which is a word separator, not a glyph). This is exactly the unique character set in `"I can be gentle."`. Step 8b adds the rest of lowercase a–z and the capitals needed by `assets/phrases/general.json` (B, L, M, O, R, S, T, W) — pure content work, no new code.
+
+`composeWord` throws `ArgumentError` on an unrecognized character. For now, the only callers pass words from the hardcoded slice phrase, so this is acceptable. When phrase loading from JSON lands, that loader should pre-validate against the available glyph map and skip or substitute unsupported characters.
+
+### Visual iteration warning
+
+Unlike DAO contract tests or controller physics tests, step 8 verification is **visual and subjective**. The first authored bezier curves are approximations. After running on the device, expect a "longer descender on g," "smoother c entry," "t crossbar feels off" feedback loop. The data file (`cursive_glyphs.dart`) is the only place that needs to change for visual tweaks; no architectural churn.
+
+### Tests
+
+- `test/domain/drawing/glyphs/bezier_test.dart` — endpoints, midpoint of straight-line bezier, sample count.
+- `test/domain/drawing/glyphs/word_composer_test.dart` — empty/single/multi-letter behavior, dense sampling guarantee (no gaps > scaled advance threshold), error on unsupported chars, all chars in the slice phrase resolve.
+
+The pan-scroll transform itself is widget-level and is verified manually on the device, consistent with how the rest of the canvas is verified.
+
 ## Open infrastructure concerns
 
 - **gradlew not committed.** The project `.gitignore` excludes `**/android/gradlew` and `**/android/gradle/wrapper/gradle-wrapper.jar`. Flutter regenerates gradle wrapper artifacts from `flutter create`, so this is workable, but contributors will need to run `flutter create .` (or equivalent) once on checkout. Reconsider if it causes friction.
