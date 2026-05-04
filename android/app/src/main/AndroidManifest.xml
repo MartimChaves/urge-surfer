@@ -1,4 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No <uses-permission android:name="android.permission.INTERNET"/> here, by design.
+         Urge Surfer is local-first and must not be able to make network requests in
+         release builds. Do NOT add the INTERNET permission to this manifest.
+
+         Note: debug/AndroidManifest.xml and profile/AndroidManifest.xml DO grant
+         INTERNET — Flutter's hot reload and Dart VM Service require it. The Android
+         manifest merger uses those only for debug and profile builds, never for
+         release. See docs.md "Network lockdown" for the full chain of evidence. -->
     <application
         android:label="urge_surfer"
         android:name="${applicationName}"
