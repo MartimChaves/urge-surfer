@@ -147,6 +147,51 @@ after `flutter pub get` and before `flutter analyze`. CI does this in `.github/w
 - **`DbKeyStore` behavior.** `flutter_secure_storage` requires a Flutter platform channel; the WaveDao tests bypass it by passing an explicit in-memory database to `AppDatabase`. Behavior verification waits for integration_test.
 - **Migration logic.** Schema is version 1 and only version 1; no `MigrationStrategy` until the schema changes.
 
+## Drawing controller (`WeightedTracingController`)
+
+The simulation behind the drawing-as-meditation mechanic. Pure Dart (only `dart:math` and `dart:ui` for `Offset`), no Flutter widgets or platform channels — fully unit-testable. Lives at `lib/domain/drawing/weighted_tracing_controller.dart`.
+
+### Model
+
+The pen position is a low-pass-filtered version of the finger position. Given a time constant `τ` (seconds) and a frame delta `Δt`:
+
+```
+α = 1 − exp(−Δt / τ)
+penPosition ← lerp(penPosition, fingerTarget, α)
+```
+
+This is the analytical discretization of a first-order linear filter, so 60Hz and 120Hz devices reach the same pen position after the same elapsed wall-clock time. A naive per-call `lerp(pen, finger, k)` would be frame-rate dependent — fast phones would feel less laggy. We don't want that.
+
+The controller also tracks how far along the template path the pen has reached (`templateIndex`). Each `tick`, after updating the pen position, it advances the index past every subsequent template point that is within `advanceThreshold` pixels of the current pen position. The index is monotonically non-decreasing — re-tracing or going off-path never reduces progress.
+
+### API
+
+- Constructor: `WeightedTracingController({required templatePoints, timeConstant = 0.4, advanceThreshold = 8.0})`. Asserts `templatePoints.length >= 2`.
+- `setFingerTarget(Offset)` — call from gesture handlers (pan/drag updates).
+- `tick(Duration dt)` — call once per animation frame from a `Ticker`. `Duration.zero` and negative durations are no-ops.
+- Read-only getters: `penPosition`, `templateIndex`, `letterComplete`, `progress` (0.0–1.0).
+
+The split between `setFingerTarget` (gesture-pushed) and `tick` (ticker-pulled) matches Flutter's idiomatic animation pattern and makes the controller trivially testable — a test loop can call `tick(Duration(milliseconds: 16))` without needing a real `AnimationController`.
+
+### Tuning parameters
+
+- `timeConstant = 0.4 s`. Pen reaches ~63% of the way to the finger after 0.4s, ~95% after 1.2s. The "feel" parameter — slow enough to feel meditative, not so slow that it frustrates. Real tuning happens via playtesting against actual glyph templates and is per-instance, not global.
+- `advanceThreshold = 8.0 px`. How close the pen must come to the next template point for the index to advance. Densely sampled templates (e.g., one point every 2–4 px) make this easy to hit; sparse templates can leave the pen "stuck." Step 8 (glyph data) needs to keep this in mind.
+
+### What the tests lock in
+
+`test/domain/drawing/weighted_tracing_controller_test.dart` covers ten cases:
+
+- Initial state (pen at first point, index 0, not complete, progress 0.0).
+- Assertion fires for fewer than 2 points.
+- Single short tick with a far finger leaves the pen mostly behind (slowness mechanic).
+- Sufficient ticks with finger at end drive the pen to the end and complete the letter.
+- 60Hz and 120Hz controllers reach the same pen position after the same total elapsed time (frame-rate independence).
+- Finger held off the path doesn't advance the index.
+- `templateIndex` is monotonically non-decreasing across noisy input.
+- After completion, moving the finger backwards does not decrease `templateIndex`.
+- `tick(Duration.zero)` and `tick(<negative>)` are no-ops.
+
 ## Open infrastructure concerns
 
 - **gradlew not committed.** The project `.gitignore` excludes `**/android/gradlew` and `**/android/gradle/wrapper/gradle-wrapper.jar`. Flutter regenerates gradle wrapper artifacts from `flutter create`, so this is workable, but contributors will need to run `flutter create .` (or equivalent) once on checkout. Reconsider if it causes friction.
