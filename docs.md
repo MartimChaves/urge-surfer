@@ -32,9 +32,8 @@ Standard Flutter app, scaffolded with `flutter create --platforms ios,android`. 
 |---|---|
 | `flutter_riverpod` | State management. Type-safe, testable, fits the nested ritual flow. |
 | `drift` | Type-safe SQLite ORM. |
-| `sqlite3_flutter_libs` | Bundled SQLite binaries for the platforms. |
-| `sqlcipher_flutter_libs` | SQLCipher binaries for at-rest encryption of the local DB. |
-| `flutter_secure_storage` | Stores the SQLCipher key in Android Keystore / iOS Keychain. |
+| `sqlite3` | SQLite bindings; v3.x bundles native libraries automatically via Dart build hooks. The `hooks.user_defines.sqlite3.source: sqlite3mc` block in `pubspec.yaml` switches the bundled binary to SQLite3MultipleCiphers, the maintained encryption-capable successor to SQLCipher. |
+| `flutter_secure_storage` | Stores the DB encryption key in Android Keystore / iOS Keychain. |
 | `go_router` | Declarative routing. |
 | `path_provider` | Locates a writable directory for the DB file. |
 
@@ -90,7 +89,6 @@ If a future feature genuinely requires one of these (e.g., serving an in-app loc
 
 ## Open infrastructure concerns
 
-- **EOL packages.** Pub resolved `sqlite3_flutter_libs 0.6.0+eol` and `sqlcipher_flutter_libs 0.7.0+eol`. The `+eol` build tag is the authors' end-of-life marker. They install and analyze cleanly today. Investigate whether `drift_flutter` (which bundles native libs differently) or another supported package replaces them, before the DB layer (step 4 of the restated plan) is built on top.
 - **gradlew not committed.** The project `.gitignore` excludes `**/android/gradlew` and `**/android/gradle/wrapper/gradle-wrapper.jar`. Flutter regenerates gradle wrapper artifacts from `flutter create`, so this is workable, but contributors will need to run `flutter create .` (or equivalent) once on checkout. Reconsider if it causes friction.
 
 ## Verification status
