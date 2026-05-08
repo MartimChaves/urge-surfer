@@ -114,11 +114,29 @@ class WeightedTracingController {
     final alpha = 1 - math.exp(-dtSec / timeConstant);
     _penPosition = Offset.lerp(_penPosition, _fingerTarget, alpha)!;
 
+    // Advance templateIndex by finding the closest point on the path within
+    // a forward search window. This handles paths that loop back on
+    // themselves (cursive letters routinely change direction inside a single
+    // stroke); the literal next sample point can be far from the pen even
+    // when later samples are close, and a "next-point only" check would
+    // stall until the user reverses direction.
     final strokeEnd = _strokeEndIndex(_currentStrokeIndex);
-    while (_templateIndex < strokeEnd &&
-        (_penPosition - templatePoints[_templateIndex + 1]).distance <
-            advanceThreshold) {
-      _templateIndex++;
+    final searchEnd = math.min(_templateIndex + _lookAheadWindow, strokeEnd);
+    int bestIdx = _templateIndex;
+    double bestDistSquared = double.infinity;
+    for (var j = _templateIndex + 1; j <= searchEnd; j++) {
+      final dx = _penPosition.dx - templatePoints[j].dx;
+      final dy = _penPosition.dy - templatePoints[j].dy;
+      final d2 = dx * dx + dy * dy;
+      if (d2 < bestDistSquared) {
+        bestDistSquared = d2;
+        bestIdx = j;
+      }
+    }
+    if (bestDistSquared < advanceThreshold * advanceThreshold) {
+      _templateIndex = bestIdx;
     }
   }
+
+  static const int _lookAheadWindow = 30;
 }

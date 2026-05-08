@@ -213,7 +213,7 @@ class _TracingPainter extends CustomPainter {
 
   void _drawTemplate(Canvas canvas) {
     final paint = Paint()
-      ..color = seedColor.withValues(alpha: 0.18)
+      ..color = seedColor.withValues(alpha: 0.35)
       ..strokeWidth = 16
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
