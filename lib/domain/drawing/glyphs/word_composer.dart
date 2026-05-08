@@ -6,33 +6,37 @@ import 'cursive_glyphs.dart';
 const int _pointsPerCurve = 20;
 const double defaultGlyphScale = 3.0;
 
-/// Default unit-coord width of a space between words. At [defaultGlyphScale]
-/// this is roughly an "n"-width gap, larger than letter-to-letter spacing
-/// within a word.
+/// Default unit-coord cursor advance between words. Letter-to-letter advance
+/// inside a word is set by each glyph's [CursiveGlyph.advanceWidth]; this
+/// controls the visual gap between consecutive words on the canvas.
 const double defaultUnitSpaceWidth = 30;
 
-/// One traceable composition (single word or whole phrase).
+/// One traceable composition (single word or whole phrase), possibly with
+/// multiple discrete strokes.
 ///
-/// [points] is the dense path the controller advances along — letters plus
-/// any bridging strokes between words.
+/// [points] is the dense path the controller advances along. The path is
+/// segmented into strokes by [strokeStartIndices] — each stroke must be
+/// completed (with the user's finger on the canvas) before the next can
+/// begin. Between consecutive strokes the points list jumps in absolute
+/// coords; the painter must `moveTo` rather than `lineTo` at those indices.
 ///
 /// [letterStartIndices] / [letterEndIndices] mark the inclusive range of
-/// [points] belonging to each letter. The bridge between consecutive words
-/// occupies the indices `letterEndIndices[i] + 1 .. letterStartIndices[i+1] - 1`
-/// when those two letters straddle a word boundary.
+/// [points] belonging to each letter, used by the canvas to compute
+/// per-letter camera focus.
 ///
-/// [letterCenterX] is the world-space horizontal center of each letter, used
-/// as the camera target while the pen is inside that letter's range.
+/// [letterCenterX] is the world-space horizontal center of each letter.
 class ComposedPath {
   final List<Offset> points;
   final List<int> letterStartIndices;
   final List<int> letterEndIndices;
   final List<double> letterCenterX;
+  final List<int> strokeStartIndices;
   const ComposedPath({
     required this.points,
     required this.letterStartIndices,
     required this.letterEndIndices,
     required this.letterCenterX,
+    required this.strokeStartIndices,
   });
 
   bool get isEmpty => points.isEmpty;
@@ -42,18 +46,19 @@ class ComposedPath {
 ///
 /// Throws [ArgumentError] on any character without a glyph in [cursiveGlyphs].
 ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
-  final points = <Offset>[];
-  final letterStartIndices = <int>[];
-  final letterEndIndices = <int>[];
-  final letterCenterX = <double>[];
   if (word.isEmpty) {
     return const ComposedPath(
       points: [],
       letterStartIndices: [],
       letterEndIndices: [],
       letterCenterX: [],
+      strokeStartIndices: [],
     );
   }
+  final points = <Offset>[];
+  final letterStartIndices = <int>[];
+  final letterEndIndices = <int>[];
+  final letterCenterX = <double>[];
   _appendWord(
     word: word,
     scale: scale,
@@ -68,15 +73,15 @@ ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
     letterStartIndices: letterStartIndices,
     letterEndIndices: letterEndIndices,
     letterCenterX: letterCenterX,
+    strokeStartIndices: const [0],
   );
 }
 
-/// Compose a whole phrase as a single continuous traceable path.
+/// Compose a whole phrase as a single multi-stroke traceable path.
 ///
-/// Splits [phrase] on spaces, composes each word in absolute phrase coords,
-/// and inserts a horizontal sampled bridge between consecutive words so the
-/// controller can advance through the gap. The bridge is `unitSpaceWidth`
-/// wide in unit coords (scaled by [scale] at sampling time).
+/// Splits [phrase] on spaces and composes each word in absolute phrase coords.
+/// Each word is one stroke; the user must lift their finger between words and
+/// touch down again near the next word's start to begin tracing it.
 ///
 /// Throws [ArgumentError] on any character without a glyph in [cursiveGlyphs].
 ComposedPath composePhrase(
@@ -91,6 +96,7 @@ ComposedPath composePhrase(
       letterStartIndices: [],
       letterEndIndices: [],
       letterCenterX: [],
+      strokeStartIndices: [],
     );
   }
 
@@ -98,20 +104,12 @@ ComposedPath composePhrase(
   final letterStartIndices = <int>[];
   final letterEndIndices = <int>[];
   final letterCenterX = <double>[];
+  final strokeStartIndices = <int>[];
 
   double cursorX = 0;
   for (var w = 0; w < words.length; w++) {
-    if (w > 0) {
-      // Bridge from the previous word's last sample to where the next word
-      // will start. Glyph entries/exits are at y≈65 in unit coords by
-      // convention, so the bridge is ~horizontal — using the previous end's
-      // y keeps it geometrically continuous with whatever exit y the last
-      // glyph actually emitted.
-      final prevEnd = points.last;
-      cursorX += unitSpaceWidth;
-      final bridgeEnd = Offset(cursorX * scale, prevEnd.dy);
-      _appendStraightBridge(prevEnd, bridgeEnd, points);
-    }
+    if (w > 0) cursorX += unitSpaceWidth;
+    strokeStartIndices.add(points.length);
     cursorX = _appendWord(
       word: words[w],
       scale: scale,
@@ -128,12 +126,10 @@ ComposedPath composePhrase(
     letterStartIndices: letterStartIndices,
     letterEndIndices: letterEndIndices,
     letterCenterX: letterCenterX,
+    strokeStartIndices: strokeStartIndices,
   );
 }
 
-/// Appends [word]'s sampled points starting at horizontal cursor [cursorXStart]
-/// (in unit coords). Returns the cursor X after the word (i.e. the rightmost
-/// advance in unit coords).
 double _appendWord({
   required String word,
   required double scale,
@@ -144,6 +140,7 @@ double _appendWord({
   required List<double> letterCenterX,
 }) {
   double cursorX = cursorXStart;
+  bool atStrokeStart = true;
   for (final char in word.split('')) {
     final glyph = cursiveGlyphs[char];
     if (glyph == null) {
@@ -157,10 +154,13 @@ double _appendWord({
           .map((p) => Offset((p.dx + cursorX) * scale, p.dy * scale))
           .toList();
       final sampled = sampleCubic(translated, _pointsPerCurve);
-      // The first sample of every bezier after the first equals the previous
-      // bezier's last sample; skip to avoid duplicate points.
-      if (points.isEmpty) {
+      // First bezier of the stroke: include the full sample (this is where
+      // the stroke begins). Every subsequent bezier (including the first
+      // bezier of a non-first letter within the stroke) shares its P0 with
+      // the previous bezier's P3, so skip the duplicate sample.
+      if (atStrokeStart) {
         points.addAll(sampled);
+        atStrokeStart = false;
       } else {
         points.addAll(sampled.skip(1));
       }
@@ -169,16 +169,4 @@ double _appendWord({
     cursorX += glyph.advanceWidth;
   }
   return cursorX;
-}
-
-void _appendStraightBridge(Offset start, Offset end, List<Offset> points) {
-  // Sample density matches glyph beziers so the pen never has a gap larger
-  // than a within-letter gap to bridge.
-  for (var i = 1; i < _pointsPerCurve; i++) {
-    final t = i / (_pointsPerCurve - 1);
-    points.add(Offset(
-      start.dx + (end.dx - start.dx) * t,
-      start.dy + (end.dy - start.dy) * t,
-    ));
-  }
 }

@@ -6,9 +6,12 @@ import 'package:flutter/scheduler.dart';
 import '../../../domain/drawing/glyphs/word_composer.dart';
 import '../../../domain/drawing/weighted_tracing_controller.dart';
 
-/// Time constant (seconds) for the camera-pan low-pass. Smaller = camera
-/// catches up to the active letter / pen position faster.
+/// Time constant (seconds) for the camera-pan low-pass.
 const double _panTimeConstant = 0.25;
+
+/// World-space radius (pixels) within which a touch is accepted as the
+/// start of the next stroke. Outside this radius, the touch is ignored.
+const double _nextStrokeTouchGate = 100.0;
 
 class DrawingCanvas extends StatefulWidget {
   final ComposedPath path;
@@ -33,15 +36,13 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   late final WeightedTracingController _controller;
   late final Ticker _ticker;
   late double _panOffsetX;
+  Offset? _fingerWorld;
   Duration _lastElapsed = Duration.zero;
   bool _completedFired = false;
 
   @override
   void initState() {
     super.initState();
-    // Vertically center the path within the canvas. Horizontal positioning is
-    // handled per-frame by the pan transform — points stay in absolute
-    // phrase-world coords (x=0 is the start of the phrase).
     final ys = widget.path.points.map((p) => p.dy);
     final yMin = ys.reduce((a, b) => a < b ? a : b);
     final yMax = ys.reduce((a, b) => a > b ? a : b);
@@ -51,12 +52,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
         .toList();
     _controller = WeightedTracingController(
       templatePoints: centered,
-      // advanceThreshold scales with the glyph scale so the pen advances at
-      // the same perceived rate regardless of how points are scaled up.
+      strokeStartIndices: widget.path.strokeStartIndices,
       advanceThreshold: 8.0 * defaultGlyphScale,
     );
-    // Start the camera centered on the first letter so the user opens onto a
-    // still frame, not a scroll-in animation.
     _panOffsetX = widget.width / 2 - widget.path.letterCenterX.first;
     _ticker = createTicker(_onTick)..start();
   }
@@ -82,14 +80,22 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     }
   }
 
-  /// While the pen is inside a letter's range, the camera target is that
-  /// letter's center (camera sits still as the user traces). While the pen
-  /// is in a between-words bridge, the camera follows the pen position
-  /// directly so the user sees the canvas scroll smoothly across the gap.
+  /// Camera target tracks the letter the pen is currently inside. Between
+  /// strokes (current stroke complete, next not yet started), the target
+  /// hops to the next stroke's first letter so the user can see where to
+  /// tap.
   double _cameraTargetWorldX() {
     final ti = _controller.templateIndex;
     final starts = widget.path.letterStartIndices;
     final ends = widget.path.letterEndIndices;
+    if (_controller.currentStrokeComplete && _controller.hasNextStroke) {
+      final nextStart =
+          widget.path.strokeStartIndices[_controller.currentStrokeIndex + 1];
+      // Find the letter that begins at nextStart.
+      for (var i = 0; i < starts.length; i++) {
+        if (starts[i] == nextStart) return widget.path.letterCenterX[i];
+      }
+    }
     for (var i = 0; i < starts.length; i++) {
       if (ti >= starts[i] && ti <= ends[i]) {
         return widget.path.letterCenterX[i];
@@ -100,6 +106,30 @@ class _DrawingCanvasState extends State<DrawingCanvas>
 
   Offset _toWorld(Offset local) => Offset(local.dx - _panOffsetX, local.dy);
 
+  void _onPointerDown(PointerDownEvent e) {
+    final worldFinger = _toWorld(e.localPosition);
+    if (_controller.currentStrokeComplete && _controller.hasNextStroke) {
+      final gateDistance =
+          (worldFinger - _controller.nextStrokeStartPoint).distance;
+      if (gateDistance > _nextStrokeTouchGate) return;
+      _controller.advanceStroke();
+    }
+    _controller.setFingerTarget(worldFinger);
+    _controller.penDown();
+    setState(() => _fingerWorld = worldFinger);
+  }
+
+  void _onPointerMove(PointerMoveEvent e) {
+    final worldFinger = _toWorld(e.localPosition);
+    _controller.setFingerTarget(worldFinger);
+    setState(() => _fingerWorld = worldFinger);
+  }
+
+  void _onPointerUp(PointerEvent e) {
+    _controller.penUp();
+    setState(() => _fingerWorld = null);
+  }
+
   @override
   void dispose() {
     _ticker.dispose();
@@ -108,10 +138,14 @@ class _DrawingCanvasState extends State<DrawingCanvas>
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    final showNextStrokeTarget =
+        _controller.currentStrokeComplete && _controller.hasNextStroke;
+    return Listener(
       behavior: HitTestBehavior.opaque,
-      onPanStart: (d) => _controller.setFingerTarget(_toWorld(d.localPosition)),
-      onPanUpdate: (d) => _controller.setFingerTarget(_toWorld(d.localPosition)),
+      onPointerDown: _onPointerDown,
+      onPointerMove: _onPointerMove,
+      onPointerUp: _onPointerUp,
+      onPointerCancel: _onPointerUp,
       child: SizedBox(
         width: widget.width,
         height: widget.height,
@@ -119,8 +153,14 @@ class _DrawingCanvasState extends State<DrawingCanvas>
           child: CustomPaint(
             painter: _TracingPainter(
               templatePoints: _controller.templatePoints,
+              strokeStartIndices: _controller.strokeStartIndices,
               penPosition: _controller.penPosition,
               templateIndex: _controller.templateIndex,
+              currentStrokeIndex: _controller.currentStrokeIndex,
+              fingerWorld: _fingerWorld,
+              nextStrokeTarget: showNextStrokeTarget
+                  ? _controller.nextStrokeStartPoint
+                  : null,
               panOffsetX: _panOffsetX,
               seedColor: Theme.of(context).colorScheme.primary,
             ),
@@ -133,15 +173,23 @@ class _DrawingCanvasState extends State<DrawingCanvas>
 
 class _TracingPainter extends CustomPainter {
   final List<Offset> templatePoints;
+  final List<int> strokeStartIndices;
   final Offset penPosition;
   final int templateIndex;
+  final int currentStrokeIndex;
+  final Offset? fingerWorld;
+  final Offset? nextStrokeTarget;
   final double panOffsetX;
   final Color seedColor;
 
   _TracingPainter({
     required this.templatePoints,
+    required this.strokeStartIndices,
     required this.penPosition,
     required this.templateIndex,
+    required this.currentStrokeIndex,
+    required this.fingerWorld,
+    required this.nextStrokeTarget,
     required this.panOffsetX,
     required this.seedColor,
   });
@@ -153,48 +201,89 @@ class _TracingPainter extends CustomPainter {
     canvas.save();
     canvas.translate(panOffsetX, 0);
 
-    final templatePaint = Paint()
+    _drawTemplate(canvas);
+    _drawCompleted(canvas);
+    _drawNextStrokeTarget(canvas);
+    _drawPen(canvas);
+    _drawFingerCursor(canvas);
+
+    canvas.restore();
+  }
+
+  void _drawTemplate(Canvas canvas) {
+    final paint = Paint()
       ..color = seedColor.withValues(alpha: 0.18)
       ..strokeWidth = 10
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
-    final fullPath = Path()
-      ..moveTo(templatePoints.first.dx, templatePoints.first.dy);
-    for (var i = 1; i < templatePoints.length; i++) {
-      fullPath.lineTo(templatePoints[i].dx, templatePoints[i].dy);
-    }
-    canvas.drawPath(fullPath, templatePaint);
+    final path = _buildMultiStrokePath(0, templatePoints.length - 1);
+    canvas.drawPath(path, paint);
+  }
 
-    if (templateIndex >= 1) {
-      final completedPaint = Paint()
-        ..color = seedColor.withValues(alpha: 0.7)
-        ..strokeWidth = 10
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..style = PaintingStyle.stroke;
-      final donePath = Path()
-        ..moveTo(templatePoints.first.dx, templatePoints.first.dy);
-      for (var i = 1; i <= templateIndex; i++) {
-        donePath.lineTo(templatePoints[i].dx, templatePoints[i].dy);
+  void _drawCompleted(Canvas canvas) {
+    if (templateIndex < 1) return;
+    final paint = Paint()
+      ..color = seedColor.withValues(alpha: 0.7)
+      ..strokeWidth = 10
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    final path = _buildMultiStrokePath(0, templateIndex);
+    canvas.drawPath(path, paint);
+  }
+
+  /// Builds a [Path] that connects [templatePoints] from index `from` to
+  /// `to` (inclusive) using `lineTo`, but emits a `moveTo` at every stroke
+  /// boundary so consecutive strokes are not visually connected.
+  Path _buildMultiStrokePath(int from, int to) {
+    final path = Path();
+    if (to < from) return path;
+    path.moveTo(templatePoints[from].dx, templatePoints[from].dy);
+    for (var i = from + 1; i <= to; i++) {
+      if (strokeStartIndices.contains(i)) {
+        path.moveTo(templatePoints[i].dx, templatePoints[i].dy);
+      } else {
+        path.lineTo(templatePoints[i].dx, templatePoints[i].dy);
       }
-      canvas.drawPath(donePath, completedPaint);
     }
+    return path;
+  }
 
+  void _drawNextStrokeTarget(Canvas canvas) {
+    if (nextStrokeTarget == null) return;
+    final ringPaint = Paint()
+      ..color = seedColor.withValues(alpha: 0.55)
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+    canvas.drawCircle(nextStrokeTarget!, 18, ringPaint);
+  }
+
+  void _drawPen(Canvas canvas) {
     canvas.drawCircle(
       penPosition,
       10,
       Paint()..color = seedColor,
     );
+  }
 
-    canvas.restore();
+  void _drawFingerCursor(Canvas canvas) {
+    if (fingerWorld == null) return;
+    final paint = Paint()
+      ..color = seedColor.withValues(alpha: 0.85)
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    canvas.drawCircle(fingerWorld!, 6, paint);
   }
 
   @override
   bool shouldRepaint(covariant _TracingPainter old) {
     return old.penPosition != penPosition ||
         old.templateIndex != templateIndex ||
+        old.currentStrokeIndex != currentStrokeIndex ||
         old.templatePoints != templatePoints ||
+        old.fingerWorld != fingerWorld ||
+        old.nextStrokeTarget != nextStrokeTarget ||
         old.panOffsetX != panOffsetX ||
         old.seedColor != seedColor;
   }

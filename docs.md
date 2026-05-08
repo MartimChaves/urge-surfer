@@ -166,10 +166,12 @@ The controller also tracks how far along the template path the pen has reached (
 
 ### API
 
-- Constructor: `WeightedTracingController({required templatePoints, timeConstant = 0.4, advanceThreshold = 8.0})`. Asserts `templatePoints.length >= 2`.
-- `setFingerTarget(Offset)` — call from gesture handlers (pan/drag updates).
-- `tick(Duration dt)` — call once per animation frame from a `Ticker`. `Duration.zero` and negative durations are no-ops.
-- Read-only getters: `penPosition`, `templateIndex`, `letterComplete`, `progress` (0.0–1.0).
+- Constructor: `WeightedTracingController({required templatePoints, strokeStartIndices, timeConstant = 0.4, advanceThreshold = 8.0})`. Asserts `templatePoints.length >= 2` and `strokeStartIndices.first == 0`. `strokeStartIndices` defaults to `[0]` (single-stroke).
+- **Pen state**: defaults to **pen-up**. While pen is up, `setFingerTarget` is ignored and `tick` is a no-op — the pen freezes. The canvas calls `penDown()` on touch and `penUp()` on lift.
+- **Stroke advancement**: `templateIndex` advances only within the current stroke. To progress past a stroke boundary, the canvas calls `advanceStroke()` (typically gated on a touch landing near `nextStrokeStartPoint`); this teleports the pen to the next stroke's first template point.
+- `setFingerTarget(Offset)` — gesture handlers push finger position; ignored while pen is up.
+- `tick(Duration dt)` — call once per animation frame from a `Ticker`. `Duration.zero`, negative durations, and pen-up state are all no-ops.
+- Read-only getters: `penPosition`, `templateIndex`, `currentStrokeIndex`, `currentStrokeComplete`, `hasNextStroke`, `nextStrokeStartPoint`, `isPenDown`, `letterComplete` (whole path complete), `progress` (0.0–1.0).
 
 The split between `setFingerTarget` (gesture-pushed) and `tick` (ticker-pulled) matches Flutter's idiomatic animation pattern and makes the controller trivially testable — a test loop can call `tick(Duration(milliseconds: 16))` without needing a real `AnimationController`.
 
@@ -250,8 +252,8 @@ The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizon
 
 - `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
 - `lib/domain/drawing/glyphs/cursive_glyphs.dart` — a `Map<String, CursiveGlyph>` with each glyph's bezier control points and advance width in unit coordinates.
-- `lib/domain/drawing/glyphs/word_composer.dart` — exposes `composeWord(word, scale)` and `composePhrase(phrase, scale, unitSpaceWidth)`, both returning the unified `ComposedPath { points, letterStartIndices, letterEndIndices, letterCenterX }`. `points` is the dense path the controller advances along (letters plus between-word bridges); `letterStartIndices` and `letterEndIndices` are inclusive index ranges for each letter, so the canvas can tell when the pen is inside a letter vs. on a bridge between words. `composePhrase` inserts a horizontal sampled bridge of `unitSpaceWidth` (default 30 unit coords ≈ 90 px at scale 3) between consecutive words; the bridge sits between `letterEndIndices[i] + 1` and `letterStartIndices[i+1] - 1`.
-- `lib/ui/ritual/widgets/drawing_canvas.dart` — applies a **per-letter pan-scroll transform** with bridge fallback. The camera target is `canvasWidth/2 − letterCenterX[currentLetter]` while `templateIndex` is inside any letter's `[start, end]` range; while it's in a between-words bridge, the target tracks the pen position directly so the canvas scrolls smoothly across the gap. The actual `panOffsetX` is tweened toward that target by a low-pass filter (`τ = 0.25 s`). Result: still while a letter is being traced, smooth scroll between letters and across word boundaries with the gap proportional to the space width. Gestures translate local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
+- `lib/domain/drawing/glyphs/word_composer.dart` — exposes `composeWord(word, scale)` and `composePhrase(phrase, scale, unitSpaceWidth)`, both returning the unified `ComposedPath { points, letterStartIndices, letterEndIndices, letterCenterX, strokeStartIndices }`. `points` is the dense path; `letterStartIndices`/`letterEndIndices` are inclusive ranges per letter; `strokeStartIndices` marks where each stroke begins. `composePhrase` does **not** insert any bridging samples between words — between strokes, the points list jumps in absolute coords and the painter must `moveTo` rather than `lineTo` at those indices. The user must lift their finger and tap near the next stroke's start to begin tracing it.
+- `lib/ui/ritual/widgets/drawing_canvas.dart` — handles raw pointer events via `Listener` (so taps without drag also fire). On pointer-down: if the current stroke is complete, the touch must land within `_nextStrokeTouchGate` (100 px world-space) of `controller.nextStrokeStartPoint` for the canvas to call `advanceStroke()` and `penDown()`; otherwise the touch is ignored. On pointer-move: forwards finger world-position into `setFingerTarget`. On pointer-up/cancel: calls `penUp()` (pen freezes; templateIndex stays). Camera target is `canvasWidth/2 − letterCenterX[i]` where `i` is whichever letter contains the pen, with one carve-out: when the current stroke is complete and a next stroke exists, the target jumps to the next stroke's first letter so the user can see where to tap. `panOffsetX` tweens toward the target via a low-pass filter (`τ = 0.25 s`).
 - `lib/ui/ritual/ritual_flow_screen.dart` — composes the entire phrase once with `composePhrase` and passes the resulting `ComposedPath` to a single `DrawingCanvas`. `onLetterComplete` fires once at end-of-phrase, advancing to the post-slider step.
 
 ### Coordinate system
@@ -271,20 +273,32 @@ Real schoolbook cursive lifts the pen for the dot on `i`/`j`, the crossbar on `t
 
 For example, the `t` in `cursive_glyphs.dart` does the descender, a small bottom curl, then loops upward to crossbar height before flowing right into the next letter. This is a recognized continuous-stroke calligraphy convention (closer to copperplate than to school cursive). It's a deliberate stylistic choice; if multi-stroke letters become important later (handwriting practice, ligatures, etc.), the controller needs a multi-stroke extension.
 
-### Pan-scroll
+### Pan-scroll and pen-up/down
 
-The drawing canvas is 320×320 px by default. The phrase `"I can be gentle."` at scale 3 is ~1500 px wide — far wider than the canvas. The pan-scroll has two modes that share one tween:
+The drawing canvas is 320×320 px by default. The phrase `"I can be gentle."` at scale 3 is ~1500 px wide — far wider than the canvas. Camera behavior:
 
-- **Inside a letter** (`templateIndex ∈ [letterStartIndices[i], letterEndIndices[i]]`): the camera target is `letterCenterX[i]`. While the user traces a single letter, the target is constant and the canvas sits still on it.
-- **On a between-words bridge** (`templateIndex` between two letters that straddle a word boundary): the camera target is the pen's current x. As the pen creeps across the bridge, the camera follows it smoothly.
+- **While the pen is inside a letter** (`templateIndex ∈ [letterStartIndices[i], letterEndIndices[i]]`): camera target is `letterCenterX[i]`. The canvas sits still on the active letter.
+- **When the current stroke is complete and a next stroke exists**: camera target jumps to the first letter of the next stroke. The user sees the next word slide in from the right, with a small target ring drawn at the next stroke's first template point as a visual prompt to tap there.
+- **All strokes complete**: camera stays on the final letter.
 
-Both modes feed the same low-pass filter (`τ = 0.25 s`) that tweens `_panOffsetX` toward the target, so transitions are continuous: tracing letter N (still) → pen exits N (target switches to pen) → camera scrolls along the bridge → pen enters letter N+1 (target switches to next letter center) → camera centers on it. Inside a word, the bridge phase is one frame because letters touch directly. Across word boundaries, the bridge spans `unitSpaceWidth` worth of points and the camera visibly scrolls across the gap.
+`panOffsetX` is tweened toward the target by a low-pass filter (`τ = 0.25 s`).
 
-Initial state: the canvas opens with the first letter already centered (`panOffsetX = width/2 − letterCenterX[0]`), so the user doesn't see a scroll-in animation on entry to the drawing step.
+Pen-up/down semantics: each stroke must be initiated by the user touching near its start, and the pen freezes whenever the finger leaves the canvas. The canvas uses `Listener` for raw pointer events so a brief tap (no drag) also registers. Pointer-down workflow:
+1. Convert the touch to world coords.
+2. If the controller's `currentStrokeComplete && hasNextStroke`, check the touch is within `_nextStrokeTouchGate = 100 px` (world-space) of `nextStrokeStartPoint`. If too far, the touch is ignored.
+3. Otherwise call `advanceStroke()` (teleports the pen to the next stroke's first template point), then `setFingerTarget(world)` and `penDown()`.
+
+Pointer-move forwards `setFingerTarget`. Pointer-up/cancel calls `penUp()`, which freezes the pen and templateIndex.
+
+Two visual indicators in addition to the existing pen circle and template:
+- **Finger cursor**: a small open circle at the real finger position whenever the pen is down. Lets the user see "where I am" alongside the inertia-lagged pen.
+- **Next-stroke target ring**: an open ring at the next stroke's first template point when the current stroke is complete. Disappears once the user advances.
+
+Initial state: the canvas opens with the first letter centered (`panOffsetX = width/2 − letterCenterX[0]`).
 
 Vertical centering happens once at canvas init — the full phrase's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
 
-Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before. To cross a between-words bridge, the user can keep their finger on the canvas (smooth slide across the gap) or lift and re-place at the next word; the pen creeps across either way and the camera follows.
+Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before.
 
 ### Phrase-as-single-template ritual flow
 
