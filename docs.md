@@ -250,8 +250,8 @@ The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizon
 
 - `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
 - `lib/domain/drawing/glyphs/cursive_glyphs.dart` — a `Map<String, CursiveGlyph>` with each glyph's bezier control points and advance width in unit coordinates.
-- `lib/domain/drawing/glyphs/word_composer.dart` — `composeWord(word, scale)` walks the chars, samples each glyph's beziers, translates by the cumulative advance, scales by `defaultGlyphScale = 3`, and emits one flat dense `List<Offset>` for the whole word.
-- `lib/ui/ritual/widgets/drawing_canvas.dart` — adds a per-frame **pan-scroll transform**: `panOffsetX = canvasWidth/2 − penPosition.dx`. The painter translates the canvas by `panOffsetX` so the pen stays near the horizontal center; gestures translate the local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
+- `lib/domain/drawing/glyphs/word_composer.dart` — `composeWord(word, scale)` walks the chars, samples each glyph's beziers, translates by the cumulative advance, scales by `defaultGlyphScale = 3`, and returns a `ComposedWord { points, letterStartIndices, letterCenterX }`. `points` is the dense path the controller advances along; the boundary lists are how the canvas knows which letter the pen is currently in and where each letter sits in world space.
+- `lib/ui/ritual/widgets/drawing_canvas.dart` — applies a **per-letter pan-scroll transform**: the camera target is `canvasWidth/2 − letterCenterX[currentLetter]` (where `currentLetter` is derived from `controller.templateIndex` via binary search over `letterStartIndices`), and the actual `panOffsetX` is tweened toward that target by a low-pass filter (`τ = 0.25 s`). The result: while the pen traces a single letter, the camera target is constant and the canvas sits still; when `templateIndex` crosses into the next letter, the target jumps to the new letter's center and the camera smoothly scrolls. Gestures translate local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
 - `lib/ui/ritual/ritual_flow_screen.dart` — splits the phrase on spaces into words; each word becomes one `DrawingCanvas` instance keyed by `wordIndex` (so reconciliation freshly reinitializes the controller and ticker per word).
 
 ### Coordinate system
@@ -273,13 +273,17 @@ For example, the `t` in `cursive_glyphs.dart` does the descender, a small bottom
 
 ### Pan-scroll
 
-The drawing canvas is 320×320 px by default. A typical word (`"gentle"`) at scale 3 is ~600 px wide — wider than the canvas. The pan-scroll transform keeps the pen near horizontal center: as the pen progresses through the word, the canvas pans left and completed letters scroll off the left edge. The user sees the active letter (and a peek of upcoming letters on the right) at large size. Vertical centering happens once at canvas init — the path's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
+The drawing canvas is 320×320 px by default. A typical word (`"gentle"`) at scale 3 is ~600 px wide — wider than the canvas. The pan-scroll keeps **one letter centered at a time**: while the pen is tracing letter N, the camera target stays at `letterCenterX[N]` and the canvas is still. When the pen advances into letter N+1 (i.e. `controller.templateIndex` crosses `letterStartIndices[N+1]`), the target jumps and a low-pass filter (`τ = 0.25 s`) smoothly tweens `panOffsetX` to the new letter's center. The transition feels deliberate, not snappy, but doesn't drift while a letter is being traced.
+
+Initial state: the canvas opens with the first letter already centered (`panOffsetX = width/2 − letterCenterX[0]`), so the user doesn't see a scroll-in animation on entry to the drawing step.
+
+Vertical centering happens once at canvas init — the path's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
 
 Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before.
 
 ### Word-indexed ritual flow
 
-`RitualFlowScreen` keeps `_wordIndex` instead of `_letterIndex`. The `_DrawingStep` widget renders the current word's full composed path via `composeWord(word)` and listens for the controller's `letterComplete` (which now means "word complete" — single-template-per-word). On word complete, advance `_wordIndex`; after the last word, advance to the post-slider step.
+`RitualFlowScreen` keeps `_wordIndex` instead of `_letterIndex`. The `_DrawingStep` widget passes the current word's `ComposedWord` (via `composeWord(word)`) into `DrawingCanvas` and listens for the controller's `letterComplete` (which now means "word complete" — single-template-per-word). On word complete, advance `_wordIndex`; after the last word, advance to the post-slider step.
 
 `DrawingCanvas`'s parameter is still named `onLetterComplete` — the abstraction is "template complete," and the term hasn't been renamed. Worth a follow-up rename if it gets confusing.
 

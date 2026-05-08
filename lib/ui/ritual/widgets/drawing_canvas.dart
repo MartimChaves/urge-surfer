@@ -1,18 +1,24 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../../domain/drawing/glyphs/word_composer.dart';
 import '../../../domain/drawing/weighted_tracing_controller.dart';
 
+/// Time constant (seconds) for the camera-pan low-pass. Smaller = camera
+/// catches up to the active letter faster.
+const double _panTimeConstant = 0.25;
+
 class DrawingCanvas extends StatefulWidget {
-  final List<Offset> templatePoints;
+  final ComposedWord word;
   final VoidCallback onLetterComplete;
   final double width;
   final double height;
 
   const DrawingCanvas({
     super.key,
-    required this.templatePoints,
+    required this.word,
     required this.onLetterComplete,
     this.width = 320,
     this.height = 320,
@@ -26,6 +32,7 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     with SingleTickerProviderStateMixin {
   late final WeightedTracingController _controller;
   late final Ticker _ticker;
+  late double _panOffsetX;
   Duration _lastElapsed = Duration.zero;
   bool _completedFired = false;
 
@@ -33,13 +40,13 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   void initState() {
     super.initState();
     // Vertically center the path within the canvas. Horizontal positioning is
-    // handled per-frame by the pan-scroll transform — the path stays in world
-    // coords (x=0 is the start of the word).
-    final ys = widget.templatePoints.map((p) => p.dy);
+    // handled per-frame by the pan transform — points stay in world coords
+    // (x=0 is the start of the word).
+    final ys = widget.word.points.map((p) => p.dy);
     final yMin = ys.reduce((a, b) => a < b ? a : b);
     final yMax = ys.reduce((a, b) => a > b ? a : b);
     final dy = widget.height / 2 - (yMin + yMax) / 2;
-    final centered = widget.templatePoints
+    final centered = widget.word.points
         .map((p) => Offset(p.dx, p.dy + dy))
         .toList();
     _controller = WeightedTracingController(
@@ -48,6 +55,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       // the same perceived rate regardless of how points are scaled up.
       advanceThreshold: 8.0 * defaultGlyphScale,
     );
+    // Start the camera centered on the first letter so the user opens onto a
+    // still frame, not a scroll-in animation.
+    _panOffsetX = widget.width / 2 - widget.word.letterCenterX.first;
     _ticker = createTicker(_onTick)..start();
   }
 
@@ -55,6 +65,18 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     final dt = elapsed - _lastElapsed;
     _lastElapsed = elapsed;
     _controller.tick(dt);
+
+    // Tween the camera toward the active letter's center. Target is constant
+    // while the pen stays inside one letter; it jumps when the templateIndex
+    // crosses a letter boundary, and the low-pass smooths the transition.
+    final dtSec = dt.inMicroseconds / 1e6;
+    if (dtSec > 0) {
+      final target = widget.width / 2 -
+          widget.word.letterCenterX[_currentLetterIndex()];
+      final alpha = 1 - math.exp(-dtSec / _panTimeConstant);
+      _panOffsetX = _panOffsetX + (target - _panOffsetX) * alpha;
+    }
+
     setState(() {});
     if (_controller.letterComplete && !_completedFired) {
       _completedFired = true;
@@ -64,10 +86,23 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     }
   }
 
-  double get _panOffsetX => widget.width / 2 - _controller.penPosition.dx;
+  int _currentLetterIndex() {
+    final ti = _controller.templateIndex;
+    final starts = widget.word.letterStartIndices;
+    var lo = 0;
+    var hi = starts.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= ti) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
 
-  Offset _toWorld(Offset local) =>
-      Offset(local.dx - _panOffsetX, local.dy);
+  Offset _toWorld(Offset local) => Offset(local.dx - _panOffsetX, local.dy);
 
   @override
   void dispose() {

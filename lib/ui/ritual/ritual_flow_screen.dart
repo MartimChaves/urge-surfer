@@ -213,7 +213,7 @@ class _DrawingStep extends StatelessWidget {
         const Spacer(),
         DrawingCanvas(
           key: ValueKey(wordIndex),
-          templatePoints: composeWord(word),
+          word: composeWord(word),
           onLetterComplete: onWordComplete,
         ),
         const Spacer(),
