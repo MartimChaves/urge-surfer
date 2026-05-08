@@ -23,12 +23,8 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
   final _urgeController = TextEditingController();
   int _urgeBefore = 5;
   int _urgeAfter = 5;
-  int _wordIndex = 0;
 
-  late final List<String> _words = _phrase
-      .split(' ')
-      .where((w) => w.isNotEmpty)
-      .toList();
+  late final ComposedPath _composedPhrase = composePhrase(_phrase);
 
   @override
   void dispose() {
@@ -40,14 +36,6 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
     setState(() {
       _step = _Step.values[_step.index + 1];
     });
-  }
-
-  void _onWordComplete() {
-    if (_wordIndex < _words.length - 1) {
-      setState(() => _wordIndex++);
-    } else {
-      _advance();
-    }
   }
 
   Future<void> _logAndExit() async {
@@ -87,9 +75,8 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
               ),
             _Step.drawing => _DrawingStep(
                 phrase: _phrase,
-                wordIndex: _wordIndex,
-                words: _words,
-                onWordComplete: _onWordComplete,
+                composedPhrase: _composedPhrase,
+                onComplete: _advance,
               ),
             _Step.postSlider => _SliderStep(
                 question: 'How strong is the urge now?',
@@ -188,33 +175,24 @@ class _SliderStep extends StatelessWidget {
 
 class _DrawingStep extends StatelessWidget {
   final String phrase;
-  final int wordIndex;
-  final List<String> words;
-  final VoidCallback onWordComplete;
+  final ComposedPath composedPhrase;
+  final VoidCallback onComplete;
   const _DrawingStep({
     required this.phrase,
-    required this.wordIndex,
-    required this.words,
-    required this.onWordComplete,
+    required this.composedPhrase,
+    required this.onComplete,
   });
 
   @override
   Widget build(BuildContext context) {
-    final word = words[wordIndex];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Text(phrase, style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 8),
-        Text(
-          'Word ${wordIndex + 1} of ${words.length}: "$word"',
-          style: Theme.of(context).textTheme.bodyLarge,
-        ),
         const Spacer(),
         DrawingCanvas(
-          key: ValueKey(wordIndex),
-          word: composeWord(word),
-          onLetterComplete: onWordComplete,
+          path: composedPhrase,
+          onLetterComplete: onComplete,
         ),
         const Spacer(),
       ],

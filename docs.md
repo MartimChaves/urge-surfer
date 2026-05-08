@@ -250,9 +250,9 @@ The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizon
 
 - `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
 - `lib/domain/drawing/glyphs/cursive_glyphs.dart` — a `Map<String, CursiveGlyph>` with each glyph's bezier control points and advance width in unit coordinates.
-- `lib/domain/drawing/glyphs/word_composer.dart` — `composeWord(word, scale)` walks the chars, samples each glyph's beziers, translates by the cumulative advance, scales by `defaultGlyphScale = 3`, and returns a `ComposedWord { points, letterStartIndices, letterCenterX }`. `points` is the dense path the controller advances along; the boundary lists are how the canvas knows which letter the pen is currently in and where each letter sits in world space.
-- `lib/ui/ritual/widgets/drawing_canvas.dart` — applies a **per-letter pan-scroll transform**: the camera target is `canvasWidth/2 − letterCenterX[currentLetter]` (where `currentLetter` is derived from `controller.templateIndex` via binary search over `letterStartIndices`), and the actual `panOffsetX` is tweened toward that target by a low-pass filter (`τ = 0.25 s`). The result: while the pen traces a single letter, the camera target is constant and the canvas sits still; when `templateIndex` crosses into the next letter, the target jumps to the new letter's center and the camera smoothly scrolls. Gestures translate local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
-- `lib/ui/ritual/ritual_flow_screen.dart` — splits the phrase on spaces into words; each word becomes one `DrawingCanvas` instance keyed by `wordIndex` (so reconciliation freshly reinitializes the controller and ticker per word).
+- `lib/domain/drawing/glyphs/word_composer.dart` — exposes `composeWord(word, scale)` and `composePhrase(phrase, scale, unitSpaceWidth)`, both returning the unified `ComposedPath { points, letterStartIndices, letterEndIndices, letterCenterX }`. `points` is the dense path the controller advances along (letters plus between-word bridges); `letterStartIndices` and `letterEndIndices` are inclusive index ranges for each letter, so the canvas can tell when the pen is inside a letter vs. on a bridge between words. `composePhrase` inserts a horizontal sampled bridge of `unitSpaceWidth` (default 30 unit coords ≈ 90 px at scale 3) between consecutive words; the bridge sits between `letterEndIndices[i] + 1` and `letterStartIndices[i+1] - 1`.
+- `lib/ui/ritual/widgets/drawing_canvas.dart` — applies a **per-letter pan-scroll transform** with bridge fallback. The camera target is `canvasWidth/2 − letterCenterX[currentLetter]` while `templateIndex` is inside any letter's `[start, end]` range; while it's in a between-words bridge, the target tracks the pen position directly so the canvas scrolls smoothly across the gap. The actual `panOffsetX` is tweened toward that target by a low-pass filter (`τ = 0.25 s`). Result: still while a letter is being traced, smooth scroll between letters and across word boundaries with the gap proportional to the space width. Gestures translate local touch position back to world coords by the inverse. A `ClipRect` keeps the off-screen portion of the path from leaking outside the canvas bounds.
+- `lib/ui/ritual/ritual_flow_screen.dart` — composes the entire phrase once with `composePhrase` and passes the resulting `ComposedPath` to a single `DrawingCanvas`. `onLetterComplete` fires once at end-of-phrase, advancing to the post-slider step.
 
 ### Coordinate system
 
@@ -273,19 +273,24 @@ For example, the `t` in `cursive_glyphs.dart` does the descender, a small bottom
 
 ### Pan-scroll
 
-The drawing canvas is 320×320 px by default. A typical word (`"gentle"`) at scale 3 is ~600 px wide — wider than the canvas. The pan-scroll keeps **one letter centered at a time**: while the pen is tracing letter N, the camera target stays at `letterCenterX[N]` and the canvas is still. When the pen advances into letter N+1 (i.e. `controller.templateIndex` crosses `letterStartIndices[N+1]`), the target jumps and a low-pass filter (`τ = 0.25 s`) smoothly tweens `panOffsetX` to the new letter's center. The transition feels deliberate, not snappy, but doesn't drift while a letter is being traced.
+The drawing canvas is 320×320 px by default. The phrase `"I can be gentle."` at scale 3 is ~1500 px wide — far wider than the canvas. The pan-scroll has two modes that share one tween:
+
+- **Inside a letter** (`templateIndex ∈ [letterStartIndices[i], letterEndIndices[i]]`): the camera target is `letterCenterX[i]`. While the user traces a single letter, the target is constant and the canvas sits still on it.
+- **On a between-words bridge** (`templateIndex` between two letters that straddle a word boundary): the camera target is the pen's current x. As the pen creeps across the bridge, the camera follows it smoothly.
+
+Both modes feed the same low-pass filter (`τ = 0.25 s`) that tweens `_panOffsetX` toward the target, so transitions are continuous: tracing letter N (still) → pen exits N (target switches to pen) → camera scrolls along the bridge → pen enters letter N+1 (target switches to next letter center) → camera centers on it. Inside a word, the bridge phase is one frame because letters touch directly. Across word boundaries, the bridge spans `unitSpaceWidth` worth of points and the camera visibly scrolls across the gap.
 
 Initial state: the canvas opens with the first letter already centered (`panOffsetX = width/2 − letterCenterX[0]`), so the user doesn't see a scroll-in animation on entry to the drawing step.
 
-Vertical centering happens once at canvas init — the path's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
+Vertical centering happens once at canvas init — the full phrase's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
 
-Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before.
+Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before. To cross a between-words bridge, the user can keep their finger on the canvas (smooth slide across the gap) or lift and re-place at the next word; the pen creeps across either way and the camera follows.
 
-### Word-indexed ritual flow
+### Phrase-as-single-template ritual flow
 
-`RitualFlowScreen` keeps `_wordIndex` instead of `_letterIndex`. The `_DrawingStep` widget passes the current word's `ComposedWord` (via `composeWord(word)`) into `DrawingCanvas` and listens for the controller's `letterComplete` (which now means "word complete" — single-template-per-word). On word complete, advance `_wordIndex`; after the last word, advance to the post-slider step.
+`RitualFlowScreen` composes the whole phrase once with `composePhrase` and passes the `ComposedPath` to one `DrawingCanvas`. The controller's `letterComplete` fires when the pen reaches the last point of the last word, which advances the ritual to the post-slider step. There is no per-word state in the parent — a single canvas instance handles the entire phrase, which is what enables continuous scrolling across word boundaries (a per-word canvas would remount and reset the camera at every word).
 
-`DrawingCanvas`'s parameter is still named `onLetterComplete` — the abstraction is "template complete," and the term hasn't been renamed. Worth a follow-up rename if it gets confusing.
+`DrawingCanvas`'s parameter is still named `onLetterComplete` for legacy reasons — the abstraction it represents is "trace template complete." Worth a follow-up rename if it gets confusing.
 
 ### advanceThreshold scaling
 
