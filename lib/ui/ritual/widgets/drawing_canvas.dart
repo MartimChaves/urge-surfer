@@ -83,7 +83,8 @@ class _DrawingCanvasState extends State<DrawingCanvas>
   /// Camera target tracks the letter the pen is currently inside. Between
   /// strokes (current stroke complete, next not yet started), the target
   /// hops to the next stroke's first letter so the user can see where to
-  /// tap.
+  /// tap. Deferred strokes (i dots, t crossbars) don't begin at letter
+  /// starts; for those, target the stroke's first point's x directly.
   double _cameraTargetWorldX() {
     final ti = _controller.templateIndex;
     final starts = widget.path.letterStartIndices;
@@ -91,10 +92,10 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     if (_controller.currentStrokeComplete && _controller.hasNextStroke) {
       final nextStart =
           widget.path.strokeStartIndices[_controller.currentStrokeIndex + 1];
-      // Find the letter that begins at nextStart.
       for (var i = 0; i < starts.length; i++) {
         if (starts[i] == nextStart) return widget.path.letterCenterX[i];
       }
+      return widget.path.points[nextStart].dx;
     }
     for (var i = 0; i < starts.length; i++) {
       if (ti >= starts[i] && ti <= ends[i]) {
@@ -213,7 +214,7 @@ class _TracingPainter extends CustomPainter {
   void _drawTemplate(Canvas canvas) {
     final paint = Paint()
       ..color = seedColor.withValues(alpha: 0.18)
-      ..strokeWidth = 10
+      ..strokeWidth = 16
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
@@ -225,7 +226,7 @@ class _TracingPainter extends CustomPainter {
     if (templateIndex < 1) return;
     final paint = Paint()
       ..color = seedColor.withValues(alpha: 0.7)
-      ..strokeWidth = 10
+      ..strokeWidth = 16
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;

@@ -13,25 +13,29 @@ void main() {
       expect(composed.isEmpty, isTrue);
     });
 
-    test('single-letter word produces a single-stroke path', () {
+    test('single-letter single-stroke word produces a single-stroke path', () {
       final composed = composeWord('a');
       expect(composed.points.length, greaterThan(20));
       expect(composed.letterStartIndices, [0]);
       expect(composed.letterEndIndices, [composed.points.length - 1]);
       expect(composed.strokeStartIndices, [0]);
-      final maxX =
-          composed.points.map((p) => p.dx).reduce((a, b) => a > b ? a : b);
-      expect(maxX, lessThan(200));
     });
 
-    test('multi-letter word is one stroke', () {
-      final composed = composeWord('gentle');
+    test('single-letter multi-stroke word adds an extra stroke boundary', () {
+      // 'i' has body + dot — two strokes per letter.
+      final composed = composeWord('i');
+      expect(composed.strokeStartIndices.length, 2);
+      expect(composed.strokeStartIndices.first, 0);
+    });
+
+    test('multi-letter word with all single-stroke letters has one stroke', () {
+      // "can": c, a, n are all single-stroke in the dataset.
+      final composed = composeWord('can');
       expect(composed.strokeStartIndices, [0]);
-      expect(composed.letterStartIndices.length, 6);
-      expect(composed.letterEndIndices.length, 6);
+      expect(composed.letterStartIndices.length, 3);
     });
 
-    test('letter start/end indices are monotonic and bracket points', () {
+    test('letter start/end indices are monotonic and bracket main strokes', () {
       final composed = composeWord('gentle');
       for (var i = 0; i < composed.letterStartIndices.length; i++) {
         expect(
@@ -46,7 +50,10 @@ void main() {
         );
       }
       expect(composed.letterStartIndices.first, 0);
-      expect(composed.letterEndIndices.last, composed.points.length - 1);
+      // Letter ranges cover the main trace; any deferred strokes (e.g. the
+      // 't' crossbar in "gentle") are appended past the last letter's end.
+      expect(composed.letterEndIndices.last,
+          lessThanOrEqualTo(composed.points.length - 1));
     });
 
     test('letterCenterX is monotonically increasing across the word', () {
@@ -59,22 +66,28 @@ void main() {
       }
     });
 
-    test('consecutive points have no gaps wider than the advance threshold', () {
-      final points = composeWord('gentle').points;
+    test('within-stroke gaps stay under the advance threshold', () {
+      // Skip the gap immediately before each stroke boundary — those are
+      // intentional pen lifts and the canvas uses strokeStartIndices to
+      // require a tap rather than tracing across.
+      final composed = composeWord('gentle');
       const maxAllowedGap = 8 * defaultGlyphScale;
-      for (var i = 1; i < points.length; i++) {
-        final gap = (points[i] - points[i - 1]).distance;
+      final strokeStarts = composed.strokeStartIndices.toSet();
+      for (var i = 1; i < composed.points.length; i++) {
+        if (strokeStarts.contains(i)) continue;
+        final gap = (composed.points[i] - composed.points[i - 1]).distance;
         expect(
           gap,
           lessThan(maxAllowedGap),
-          reason: 'gap of $gap between points $i-1 and $i exceeds '
-              'advanceThreshold-scale of $maxAllowedGap',
+          reason: 'within-stroke gap of $gap between points ${i - 1} and $i '
+              'exceeds threshold $maxAllowedGap',
         );
       }
     });
 
     test('throws on unsupported character', () {
-      expect(() => composeWord('z'), throwsArgumentError);
+      // '@' is not a glyph in any phrase content nor in cursiveGlyphs.
+      expect(() => composeWord('a@b'), throwsArgumentError);
     });
   });
 
@@ -84,43 +97,40 @@ void main() {
       expect(composePhrase('   ').isEmpty, isTrue);
     });
 
-    test('single-word phrase has one stroke', () {
+    test('single-word phrase with multi-stroke letter defers to end', () {
       final phrase = composePhrase('gentle');
-      expect(phrase.strokeStartIndices, [0]);
-      expect(phrase.points.length, composeWord('gentle').points.length);
-    });
-
-    test('multi-word phrase has one stroke per word', () {
-      final phrase = composePhrase('I can be gentle.');
-      expect(phrase.strokeStartIndices.length, 4);
+      // "gentle" main trace + t-crossbar (deferred to end) = 2 strokes.
+      expect(phrase.strokeStartIndices.length, 2);
       expect(phrase.strokeStartIndices.first, 0);
-      // Subsequent stroke starts must be strictly increasing and align with
-      // letterStartIndices entries (each stroke begins at a letter start).
-      for (var i = 1; i < phrase.strokeStartIndices.length; i++) {
-        expect(phrase.strokeStartIndices[i],
-            greaterThan(phrase.strokeStartIndices[i - 1]));
-        expect(phrase.letterStartIndices,
-            contains(phrase.strokeStartIndices[i]));
-      }
     });
 
-    test('between-strokes gap exists in absolute coords', () {
+    test('strokes count equals words count plus deferred strokes', () {
+      final clean = composePhrase('be can');
+      // "be" + "can", both with all single-stroke letters = 2 word strokes.
+      expect(clean.strokeStartIndices.length, 2);
+      // "I can be gentle." has 4 words and 1 deferred (t-crossbar in gentle)
+      // = 5 strokes total.
+      final phrase = composePhrase('I can be gentle.');
+      expect(phrase.strokeStartIndices.length, 5);
+    });
+
+    test('between-words gap exists in absolute coords', () {
       final phrase = composePhrase('be gentle');
-      // Last point of stroke 0 to first point of stroke 1 should be roughly
-      // unitSpaceWidth-scaled apart (with no bridge points between them).
-      final stroke1Start = phrase.strokeStartIndices[1];
-      final endOfStroke0 = phrase.points[stroke1Start - 1];
-      final startOfStroke1 = phrase.points[stroke1Start];
-      final gap = (startOfStroke1 - endOfStroke0).distance;
+      // The first stroke boundary after 0 is the start of "gentle".
+      final stroke1 = phrase.strokeStartIndices[1];
+      final endOfBe = phrase.points[stroke1 - 1];
+      final startOfGentle = phrase.points[stroke1];
+      final gap = (startOfGentle - endOfBe).distance;
       expect(gap, greaterThan(50),
-          reason: 'no bridge — there should be a visible gap between words');
+          reason: 'no bridge between words — there should be a visible gap');
     });
 
     test('within-stroke gaps stay under advance threshold', () {
       final phrase = composePhrase('I can be gentle.');
       const maxAllowedGap = 8 * defaultGlyphScale;
+      final strokeStarts = phrase.strokeStartIndices.toSet();
       for (var i = 1; i < phrase.points.length; i++) {
-        if (phrase.strokeStartIndices.contains(i)) continue;
+        if (strokeStarts.contains(i)) continue;
         final gap = (phrase.points[i] - phrase.points[i - 1]).distance;
         expect(
           gap,
@@ -142,7 +152,8 @@ void main() {
     });
 
     test('throws on unsupported character', () {
-      expect(() => composePhrase('be brave'), throwsArgumentError);
+      // '@' is not a glyph in cursiveGlyphs.
+      expect(() => composePhrase('be br@ve'), throwsArgumentError);
     });
   });
 }

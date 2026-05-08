@@ -42,7 +42,11 @@ class ComposedPath {
   bool get isEmpty => points.isEmpty;
 }
 
-/// Compose a single word as one continuous stroke.
+/// Compose a single word as a multi-stroke traceable path.
+///
+/// Most letters contribute one continuous stroke. Letters with intrinsic
+/// pen-lifts (i, j, t, x) contribute additional strokes; the canvas treats
+/// those as required pen-up boundaries.
 ///
 /// Throws [ArgumentError] on any character without a glyph in [cursiveGlyphs].
 ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
@@ -59,6 +63,7 @@ ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
   final letterStartIndices = <int>[];
   final letterEndIndices = <int>[];
   final letterCenterX = <double>[];
+  final strokeStartIndices = <int>[0];
   _appendWord(
     word: word,
     scale: scale,
@@ -67,13 +72,14 @@ ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
     letterStartIndices: letterStartIndices,
     letterEndIndices: letterEndIndices,
     letterCenterX: letterCenterX,
+    strokeStartIndices: strokeStartIndices,
   );
   return ComposedPath(
     points: points,
     letterStartIndices: letterStartIndices,
     letterEndIndices: letterEndIndices,
     letterCenterX: letterCenterX,
-    strokeStartIndices: const [0],
+    strokeStartIndices: strokeStartIndices,
   );
 }
 
@@ -118,6 +124,7 @@ ComposedPath composePhrase(
       letterStartIndices: letterStartIndices,
       letterEndIndices: letterEndIndices,
       letterCenterX: letterCenterX,
+      strokeStartIndices: strokeStartIndices,
     );
   }
 
@@ -138,10 +145,26 @@ double _appendWord({
   required List<int> letterStartIndices,
   required List<int> letterEndIndices,
   required List<double> letterCenterX,
+  required List<int> strokeStartIndices,
 }) {
+  // Two-pass composition:
+  //   Pass 1 (main trace): walk letters in order, sampling each letter's
+  //     strokes[0] (the joinable main stroke) and connecting them with short
+  //     bridges. This produces the word's continuous main stroke, ready to be
+  //     traced without a lift.
+  //   Pass 2 (deferred): emit any strokes[1+] from multi-stroke letters
+  //     (i/j dots, t crossbar, x's second diagonal) as separate strokes after
+  //     the main trace. Each requires a tap to begin (canvas-side gating on
+  //     proximity to the stroke's first point).
+  //
+  // This matches how cursive is conventionally written — body first, then go
+  // back to dot the i's, cross the t's — and minimizes mid-word pen lifts.
+
+  final deferred = <(double, CursiveStroke)>[];
   double cursorX = cursorXStart;
-  bool atStrokeStart = true;
-  for (final char in word.split('')) {
+
+  for (var letterIdx = 0; letterIdx < word.length; letterIdx++) {
+    final char = word[letterIdx];
     final glyph = cursiveGlyphs[char];
     if (glyph == null) {
       throw ArgumentError('No cursive glyph for character: "$char"');
@@ -149,24 +172,67 @@ double _appendWord({
     letterStartIndices.add(points.length);
     letterCenterX.add((cursorX + glyph.advanceWidth / 2) * scale);
 
-    for (var i = 0; i < glyph.beziers.length; i++) {
-      final translated = glyph.beziers[i]
+    final mainStroke = glyph.strokes.first;
+    final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
+    if (addBridge) {
+      final firstP0 = mainStroke.beziers.first.first;
+      final bridgeEnd =
+          Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
+      _appendStraightBridge(points.last, bridgeEnd, points);
+    }
+
+    bool firstBezierOfStroke = !addBridge;
+    for (var i = 0; i < mainStroke.beziers.length; i++) {
+      final translated = mainStroke.beziers[i]
           .map((p) => Offset((p.dx + cursorX) * scale, p.dy * scale))
           .toList();
       final sampled = sampleCubic(translated, _pointsPerCurve);
-      // First bezier of the stroke: include the full sample (this is where
-      // the stroke begins). Every subsequent bezier (including the first
-      // bezier of a non-first letter within the stroke) shares its P0 with
-      // the previous bezier's P3, so skip the duplicate sample.
-      if (atStrokeStart) {
+      if (firstBezierOfStroke) {
         points.addAll(sampled);
-        atStrokeStart = false;
+        firstBezierOfStroke = false;
       } else {
         points.addAll(sampled.skip(1));
       }
     }
+
     letterEndIndices.add(points.length - 1);
+
+    for (var s = 1; s < glyph.strokes.length; s++) {
+      deferred.add((cursorX, glyph.strokes[s]));
+    }
+
     cursorX += glyph.advanceWidth;
   }
+
+  for (final entry in deferred) {
+    final deferredCursorX = entry.$1;
+    final stroke = entry.$2;
+    strokeStartIndices.add(points.length);
+    bool firstBezierOfStroke = true;
+    for (var i = 0; i < stroke.beziers.length; i++) {
+      final translated = stroke.beziers[i]
+          .map((p) =>
+              Offset((p.dx + deferredCursorX) * scale, p.dy * scale))
+          .toList();
+      final sampled = sampleCubic(translated, _pointsPerCurve);
+      if (firstBezierOfStroke) {
+        points.addAll(sampled);
+        firstBezierOfStroke = false;
+      } else {
+        points.addAll(sampled.skip(1));
+      }
+    }
+  }
+
   return cursorX;
+}
+
+void _appendStraightBridge(Offset start, Offset end, List<Offset> points) {
+  for (var i = 1; i < _pointsPerCurve; i++) {
+    final t = i / (_pointsPerCurve - 1);
+    points.add(Offset(
+      start.dx + (end.dx - start.dx) * t,
+      start.dy + (end.dy - start.dy) * t,
+    ));
+  }
 }
