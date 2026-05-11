@@ -11,6 +11,11 @@ const double defaultGlyphScale = 3.0;
 /// controls the visual gap between consecutive words on the canvas.
 const double defaultUnitSpaceWidth = 30;
 
+/// Extra unit-coord spacing added after each letter's advance width, giving
+/// breathing room between letter bodies that would otherwise sit too close
+/// after lead-in/lead-out curve stripping.
+const double defaultUnitLetterSpacing = 8.0;
+
 /// One traceable composition (single word or whole phrase), possibly with
 /// multiple discrete strokes.
 ///
@@ -125,6 +130,7 @@ ComposedPath composePhrase(
       letterEndIndices: letterEndIndices,
       letterCenterX: letterCenterX,
       strokeStartIndices: strokeStartIndices,
+      addBaselineApproach: true,
     );
   }
 
@@ -146,6 +152,8 @@ double _appendWord({
   required List<int> letterEndIndices,
   required List<double> letterCenterX,
   required List<int> strokeStartIndices,
+  bool addBaselineApproach = false,
+  double unitLetterSpacing = defaultUnitLetterSpacing,
 }) {
   // Two-pass composition:
   //   Pass 1 (main trace): walk letters in order, sampling each letter's
@@ -173,15 +181,32 @@ double _appendWord({
     letterCenterX.add((cursorX + glyph.advanceWidth / 2) * scale);
 
     final mainStroke = glyph.strokes.first;
-    final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
-    if (addBridge) {
-      final firstP0 = mainStroke.beziers.first.first;
-      final bridgeEnd =
-          Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
-      _appendStraightBridge(points.last, bridgeEnd, points);
-    }
+    bool firstBezierOfStroke;
 
-    bool firstBezierOfStroke = !addBridge;
+    if (letterIdx == 0 && addBaselineApproach && mainStroke.beziers.isNotEmpty) {
+      // Prepend a straight approach from the baseline down to P0 so the stroke
+      // starts at a natural pen-down point (baseline Y) rather than mid-letter.
+      final firstP0 = mainStroke.beziers.first.first;
+      final worldP0 = Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
+      final baselineY = 70.0 * scale;
+      if (worldP0.dy < baselineY - 1.0) {
+        final approachStart = Offset(worldP0.dx, baselineY);
+        points.add(approachStart);
+        _appendStraightBridge(approachStart, worldP0, points);
+        firstBezierOfStroke = false; // worldP0 already added by bridge
+      } else {
+        firstBezierOfStroke = true;
+      }
+    } else {
+      final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
+      if (addBridge) {
+        final firstP0 = mainStroke.beziers.first.first;
+        final bridgeEnd =
+            Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
+        _appendStraightBridge(points.last, bridgeEnd, points);
+      }
+      firstBezierOfStroke = !addBridge;
+    }
     for (var i = 0; i < mainStroke.beziers.length; i++) {
       final translated = mainStroke.beziers[i]
           .map((p) => Offset((p.dx + cursorX) * scale, p.dy * scale))
@@ -201,7 +226,7 @@ double _appendWord({
       deferred.add((cursorX, glyph.strokes[s]));
     }
 
-    cursorX += glyph.advanceWidth;
+    cursorX += glyph.advanceWidth + unitLetterSpacing;
   }
 
   for (final entry in deferred) {

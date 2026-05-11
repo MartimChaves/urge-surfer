@@ -203,6 +203,7 @@ class _TracingPainter extends CustomPainter {
     canvas.translate(panOffsetX, 0);
 
     _drawTemplate(canvas);
+    _drawDirectionArrows(canvas);
     _drawCompleted(canvas);
     _drawNextStrokeTarget(canvas);
     _drawPen(canvas);
@@ -219,6 +220,50 @@ class _TracingPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
     final path = _buildMultiStrokePath(0, templatePoints.length - 1);
+    canvas.drawPath(path, paint);
+  }
+
+  void _drawDirectionArrows(Canvas canvas) {
+    const spacing = 30;
+    const arrowSize = 8.0;
+    const halfAngle = 0.45;
+
+    final strokeStart = strokeStartIndices[currentStrokeIndex];
+    final strokeEnd = currentStrokeIndex + 1 < strokeStartIndices.length
+        ? strokeStartIndices[currentStrokeIndex + 1] - 1
+        : templatePoints.length - 1;
+
+    // Next chevron position strictly ahead of the current template index.
+    final i = strokeStart +
+        ((templateIndex - strokeStart) ~/ spacing + 1) * spacing;
+    if (i >= strokeEnd) return;
+
+    final prev = templatePoints[math.max(i - 2, strokeStart)];
+    final next = templatePoints[math.min(i + 2, strokeEnd)];
+    final dx = next.dx - prev.dx;
+    final dy = next.dy - prev.dy;
+    final len = math.sqrt(dx * dx + dy * dy);
+    if (len < 0.001) return;
+    final ux = dx / len;
+    final uy = dy / len;
+    final tip = templatePoints[i];
+    final cos = math.cos(halfAngle);
+    final sin = math.sin(halfAngle);
+    final bx = -ux;
+    final by = -uy;
+    final paint = Paint()
+      ..color = seedColor.withValues(alpha: 0.55)
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    final path = Path()
+      ..moveTo(
+          tip.dx + (bx * cos - by * sin) * arrowSize,
+          tip.dy + (bx * sin + by * cos) * arrowSize)
+      ..lineTo(tip.dx, tip.dy)
+      ..lineTo(
+          tip.dx + (bx * cos + by * sin) * arrowSize,
+          tip.dy + (-bx * sin + by * cos) * arrowSize);
     canvas.drawPath(path, paint);
   }
 

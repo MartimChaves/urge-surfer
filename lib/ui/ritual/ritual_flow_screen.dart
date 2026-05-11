@@ -7,7 +7,7 @@ import '../../data/db/database.dart';
 import '../../domain/drawing/glyphs/word_composer.dart';
 import 'widgets/drawing_canvas.dart';
 
-const String _phrase = 'I can be gentle.';
+const String _phrase = 'i can be gentle.';
 
 enum _Step { nameUrge, preSlider, drawing, postSlider }
 

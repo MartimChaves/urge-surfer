@@ -360,13 +360,17 @@ const Map<String, CursiveGlyph> cursiveGlyphs = {
     ],
   ),
   'I': CursiveGlyph(
-    advanceWidth: 25,
+    advanceWidth: 34,
     strokes: [
       CursiveStroke(beziers: [
-        [Offset(0, 65), Offset(3, 40), Offset(8, 20), Offset(12, 10)],
-        [Offset(12, 10), Offset(18, 8), Offset(20, 12), Offset(15, 18)],
-        [Offset(15, 18), Offset(13, 35), Offset(11, 55), Offset(8, 70)],
-        [Offset(8, 70), Offset(15, 73), Offset(22, 68), Offset(25, 65)],
+        // Sweep up from baseline-left to top of ascender
+        [Offset(2, 70), Offset(-2, 48), Offset(5, 18), Offset(13, 4)],
+        // Broad arch over the top: right across to ~x=30, then back left to x=20
+        [Offset(13, 4), Offset(26, -4), Offset(34, 10), Offset(21, 24)],
+        // Descend back through to baseline
+        [Offset(21, 24), Offset(13, 44), Offset(9, 60), Offset(11, 70)],
+        // Exit flourish to the right
+        [Offset(11, 70), Offset(19, 76), Offset(28, 70), Offset(34, 65)],
       ]),
     ],
   ),
