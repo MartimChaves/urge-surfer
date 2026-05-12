@@ -18,6 +18,7 @@ class DrawingCanvas extends StatefulWidget {
   final VoidCallback onLetterComplete;
   final double width;
   final double height;
+  final bool lagEnabled;
 
   const DrawingCanvas({
     super.key,
@@ -25,6 +26,7 @@ class DrawingCanvas extends StatefulWidget {
     required this.onLetterComplete,
     this.width = 320,
     this.height = 320,
+    this.lagEnabled = true,
   });
 
   @override
@@ -54,9 +56,18 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       templatePoints: centered,
       strokeStartIndices: widget.path.strokeStartIndices,
       advanceThreshold: 8.0 * defaultGlyphScale,
+      timeConstant: widget.lagEnabled ? 0.4 : 0.001,
     );
     _panOffsetX = widget.width / 2 - widget.path.letterCenterX.first;
     _ticker = createTicker(_onTick)..start();
+  }
+
+  @override
+  void didUpdateWidget(DrawingCanvas old) {
+    super.didUpdateWidget(old);
+    if (old.lagEnabled != widget.lagEnabled) {
+      _controller.timeConstant = widget.lagEnabled ? 0.4 : 0.001;
+    }
   }
 
   void _onTick(Duration elapsed) {

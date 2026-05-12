@@ -7,7 +7,7 @@ import '../../data/db/database.dart';
 import '../../domain/drawing/glyphs/word_composer.dart';
 import 'widgets/drawing_canvas.dart';
 
-const String _phrase = 'i can be gentle.';
+const String _phrase = 'i can be gentle';
 
 enum _Step { nameUrge, preSlider, drawing, postSlider }
 
@@ -173,7 +173,7 @@ class _SliderStep extends StatelessWidget {
   }
 }
 
-class _DrawingStep extends StatelessWidget {
+class _DrawingStep extends StatefulWidget {
   final String phrase;
   final ComposedPath composedPhrase;
   final VoidCallback onComplete;
@@ -184,17 +184,35 @@ class _DrawingStep extends StatelessWidget {
   });
 
   @override
+  State<_DrawingStep> createState() => _DrawingStepState();
+}
+
+class _DrawingStepState extends State<_DrawingStep> {
+  bool _lagEnabled = true;
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text(phrase, style: Theme.of(context).textTheme.titleLarge),
+        Text(widget.phrase, style: Theme.of(context).textTheme.titleLarge),
         const Spacer(),
         DrawingCanvas(
-          path: composedPhrase,
-          onLetterComplete: onComplete,
+          path: widget.composedPhrase,
+          onLetterComplete: widget.onComplete,
+          lagEnabled: _lagEnabled,
         ),
         const Spacer(),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('pen lag', style: Theme.of(context).textTheme.bodySmall),
+            Switch(
+              value: _lagEnabled,
+              onChanged: (v) => setState(() => _lagEnabled = v),
+            ),
+          ],
+        ),
       ],
     );
   }

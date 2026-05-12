@@ -19,7 +19,7 @@ import 'dart:ui' show Offset;
 class WeightedTracingController {
   final List<Offset> templatePoints;
   final List<int> strokeStartIndices;
-  final double timeConstant;
+  double timeConstant;
   final double advanceThreshold;
 
   Offset _penPosition;
