@@ -20,12 +20,12 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 36.61,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(10.12, 54.38), Offset(10.88, 34.88), Offset(23.25, 26.66), Offset(36.88, 34.88)],
-        [Offset(36.88, 34.88), Offset(23.24, 26.82), Offset(18.50, 35.00), Offset(14.88, 38.38)],
-        [Offset(14.88, 38.38), Offset(13.12, 42.50), Offset(10.00, 43.12), Offset(10.00, 57.25)],
-        [Offset(10.00, 57.25), Offset(10.88, 69.62), Offset(25.73, 76.68), Offset(30.12, 61.50)],
-        [Offset(30.12, 61.50), Offset(33.12, 48.38), Offset(35.42, 40.00), Offset(37.50, 31.00)],
-        [Offset(37.50, 31.00), Offset(35.96, 42.30), Offset(20.50, 83.50), Offset(37.75, 65.75)],
+        [Offset(8.24, 54.26), Offset(9.01, 34.76), Offset(22.88, 25.75), Offset(35.01, 34.76)],
+        [Offset(35.01, 34.76), Offset(21.12, 26.38), Offset(16.62, 34.88), Offset(13.01, 38.26)],
+        [Offset(13.01, 38.26), Offset(11.24, 42.38), Offset(8.12, 42.99), Offset(8.12, 57.12)],
+        [Offset(8.12, 57.12), Offset(9.01, 69.50), Offset(23.50, 76.62), Offset(28.25, 61.38)],
+        [Offset(28.25, 61.38), Offset(29.75, 58.75), Offset(33.55, 39.88), Offset(35.62, 30.88)],
+        [Offset(35.62, 30.88), Offset(29.75, 51.00), Offset(25.00, 91.25), Offset(36.50, 55.38)],
       ]),
     ],
   ),
@@ -33,13 +33,10 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 36.54,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(2.49, 19.18), Offset(2.64, 13.20), Offset(2.38, 11.02), Offset(2.58, 0.23)],
-        [Offset(2.58, 0.23), Offset(2.36, 13.10), Offset(2.54, 23.59), Offset(2.47, 29.58)],
-        [Offset(2.47, 29.58), Offset(2.41, 35.58), Offset(0.34, 46.78), Offset(0.11, 70.03)],
-        [Offset(0.11, 70.03), Offset(0.46, 62.47), Offset(1.00, 52.97), Offset(2.09, 40.68)],
-        [Offset(2.09, 40.68), Offset(4.72, 28.51), Offset(37.44, 22.65), Offset(36.02, 50.68)],
-        [Offset(36.02, 50.68), Offset(33.66, 78.76), Offset(6.63, 67.63), Offset(0.63, 65.24)],
-        [Offset(0.63, 65.24), Offset(7.55, 67.39), Offset(14.38, 69.96), Offset(22.73, 69.88)],
+        [Offset(-0.50, 54.90), Offset(14.17, 17.69), Offset(19.31, 3.17), Offset(16.59, 0.15)],
+        [Offset(16.59, 0.15), Offset(5.70, 29.80), Offset(4.04, 72.30), Offset(10.99, 69.42)],
+        [Offset(10.99, 69.42), Offset(27.03, 72.45), Offset(27.78, 45.83), Offset(8.88, 49.00)],
+        [Offset(8.88, 49.00), Offset(6.46, 48.70), Offset(13.87, 56.11), Offset(36.71, 53.84)],
       ]),
     ],
   ),
@@ -47,10 +44,10 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 33.96,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(3.25, 40.58), Offset(13.37, 21.79), Offset(32.45, 34.36), Offset(33.77, 35.38)],
-        [Offset(33.77, 35.38), Offset(5.01, 15.77), Offset(-10.14, 57.89), Offset(7.96, 67.36)],
-        [Offset(7.96, 67.36), Offset(14.39, 70.73), Offset(27.88, 69.94), Offset(33.90, 68.22)],
-        [Offset(33.90, 68.22), Offset(34.02, 68.20), Offset(34.08, 68.18), Offset(34.18, 68.16)],
+        [Offset(-0.35, 55.20), Offset(13.37, 21.79), Offset(30.35, 30.10), Offset(33.08, 30.85)],
+        [Offset(33.08, 30.85), Offset(13.11, 21.48), Offset(3.58, 53.99), Offset(6.91, 60.35)],
+        [Offset(6.91, 60.35), Offset(9.93, 73.81), Offset(27.88, 69.94), Offset(33.83, 55.81)],
+        [Offset(33.83, 55.81), Offset(34.02, 68.20), Offset(34.08, 68.18), Offset(33.83, 55.81)],
       ]),
     ],
   ),
@@ -58,13 +55,13 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 39.82,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(0.53, 43.57), Offset(9.18, 24.12), Offset(30.48, 29.59), Offset(36.99, 36.59)],
-        [Offset(36.99, 36.59), Offset(22.59, 24.08), Offset(-0.02, 31.81), Offset(0.18, 47.82)],
-        [Offset(0.18, 47.82), Offset(-0.15, 73.56), Offset(24.67, 73.04), Offset(36.30, 63.92)],
-        [Offset(36.30, 63.92), Offset(37.40, 49.22), Offset(37.45, 36.45), Offset(37.26, -0.62)],
-        [Offset(37.26, -0.62), Offset(36.31, 12.47), Offset(37.76, 26.97), Offset(37.03, 40.08)],
-        [Offset(37.03, 40.08), Offset(35.63, 65.14), Offset(37.17, 66.91), Offset(37.87, 68.04)],
-        [Offset(37.87, 68.04), Offset(38.57, 69.18), Offset(40.81, 69.95), Offset(42.78, 69.87)],
+        [Offset(0.41, 55.66), Offset(5.40, 56.57), Offset(17.35, 18.00), Offset(36.99, 36.59)],
+        [Offset(36.99, 36.59), Offset(29.60, 28.89), Offset(8.27, 26.32), Offset(13.26, 63.22)],
+        [Offset(13.26, 63.22), Offset(14.17, 71.84), Offset(24.67, 73.04), Offset(33.08, 62.62)],
+        [Offset(33.08, 62.62), Offset(37.40, 49.22), Offset(37.45, 36.45), Offset(37.26, -0.62)],
+        [Offset(37.26, -0.62), Offset(36.31, 12.47), Offset(37.76, 26.97), Offset(37.16, 36.00)],
+        [Offset(37.16, 36.00), Offset(35.63, 65.14), Offset(31.26, 63.22), Offset(30.81, 65.64)],
+        [Offset(30.81, 65.64), Offset(33.83, 73.81), Offset(40.81, 69.95), Offset(40.03, 55.36)],
       ]),
     ],
   ),
@@ -72,11 +69,11 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 29.52,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(0.38, 69.62), Offset(0.25, 69.75), Offset(15.50, 63.25), Offset(28.88, 43.62)],
+        [Offset(-0.35, 55.36), Offset(6.12, 59.75), Offset(15.50, 63.25), Offset(28.88, 43.62)],
         [Offset(28.88, 43.62), Offset(29.47, 32.83), Offset(25.50, 32.12), Offset(21.25, 30.38)],
-        [Offset(21.25, 30.38), Offset(12.88, 31.75), Offset(9.88, 36.62), Offset(8.50, 38.75)],
-        [Offset(8.50, 38.75), Offset(1.63, 54.85), Offset(8.50, 59.75), Offset(8.12, 61.38)],
-        [Offset(8.12, 61.38), Offset(13.50, 74.50), Offset(28.00, 69.25), Offset(29.50, 69.62)],
+        [Offset(21.25, 30.38), Offset(12.88, 31.75), Offset(11.75, 34.48), Offset(7.36, 41.59)],
+        [Offset(7.36, 41.59), Offset(1.63, 54.85), Offset(8.50, 59.75), Offset(12.66, 65.34)],
+        [Offset(12.66, 65.34), Offset(19.16, 74.41), Offset(28.00, 69.25), Offset(30.05, 55.81)],
       ]),
     ],
   ),
@@ -163,7 +160,7 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 15.39,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(0.38, 69.50), Offset(15.38, 29.38), Offset(15.75, 0.75), Offset(11.62, 0.25)],
+        [Offset(1.88, 63.12), Offset(15.38, 29.38), Offset(15.75, 0.75), Offset(11.62, 0.25)],
         [Offset(11.62, 0.25), Offset(3.25, 7.00), Offset(2.62, 24.62), Offset(2.62, 32.50)],
         [Offset(2.62, 32.50), Offset(4.00, 59.88), Offset(12.38, 71.25), Offset(15.12, 69.75)],
       ]),
@@ -188,8 +185,8 @@ const Map<String, CursiveGlyph> lowercaseGlyphs = {
     advanceWidth: 32.81,
     strokes: [
       CursiveStroke(beziers: [  // main
-        [Offset(0.12, 69.50), Offset(7.00, 72.00), Offset(1.38, 37.50), Offset(10.25, 30.38)],
-        [Offset(10.25, 30.38), Offset(16.62, 28.25), Offset(22.12, 35.25), Offset(19.75, 69.00)],
+        [Offset(5.75, 52.62), Offset(9.12, 43.00), Offset(7.62, 38.75), Offset(12.88, 30.50)],
+        [Offset(12.88, 30.50), Offset(16.62, 28.25), Offset(22.12, 35.25), Offset(19.75, 69.00)],
         [Offset(19.75, 69.00), Offset(21.12, 45.38), Offset(17.00, 28.50), Offset(30.38, 30.25)],
         [Offset(30.38, 30.25), Offset(41.25, 46.00), Offset(22.62, 75.25), Offset(42.50, 69.88)],
       ]),

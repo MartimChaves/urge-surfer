@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../ui/dev/just_write_screen.dart';
 import '../ui/ledger/ledger_screen.dart';
 import '../ui/ritual/ritual_flow_screen.dart';
 
@@ -13,6 +14,10 @@ final _router = GoRouter(
     GoRoute(
       path: '/ritual',
       builder: (context, state) => const RitualFlowScreen(),
+    ),
+    GoRoute(
+      path: '/just-write',
+      builder: (context, state) => const JustWriteScreen(),
     ),
   ],
 );

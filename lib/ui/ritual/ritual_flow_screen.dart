@@ -5,9 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../data/db/database.dart';
 import '../../domain/drawing/glyphs/word_composer.dart';
+import '../../domain/phrases.dart';
 import 'widgets/drawing_canvas.dart';
-
-const String _phrase = 'i can be gentle';
 
 enum _Step { nameUrge, preSlider, drawing, postSlider }
 
@@ -24,6 +23,8 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
   int _urgeBefore = 5;
   int _urgeAfter = 5;
 
+  late final String _phrase =
+      (selfCompassionPhrases.toList()..shuffle()).first;
   late final ComposedPath _composedPhrase = composePhrase(_phrase);
 
   @override

@@ -47,6 +47,11 @@ class LedgerScreen extends ConsumerWidget {
                 child: Text('Start a wave'),
               ),
             ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: () => context.push('/just-write'),
+              child: const Text('Just write'),
+            ),
           ],
         ),
       ),

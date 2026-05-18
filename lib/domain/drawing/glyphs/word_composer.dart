@@ -142,7 +142,6 @@ ComposedPath composePhrase(
       letterEndIndices: letterEndIndices,
       letterCenterX: letterCenterX,
       strokeStartIndices: strokeStartIndices,
-      addBaselineApproach: true,
     );
   }
 
@@ -166,7 +165,6 @@ double _appendWord({
   required List<int> letterEndIndices,
   required List<double> letterCenterX,
   required List<int> strokeStartIndices,
-  bool addBaselineApproach = false,
   double unitLetterSpacing = defaultUnitLetterSpacing,
 }) {
   // Two-pass composition:
@@ -195,46 +193,25 @@ double _appendWord({
     letterCenterX.add((cursorX + glyph.advanceWidth / 2) * scale);
 
     final mainStroke = glyph.strokes.first;
-    bool firstBezierOfStroke;
-
-    if (letterIdx == 0 && addBaselineApproach && mainStroke.beziers.isNotEmpty) {
-      // Prepend a smooth approach from the baseline up into the letter's
-      // first stroke. The pen rises from the baseline (tangent up) and eases
-      // into the letter's entry tangent.
+    // Each word's stroke begins at its first letter's P0 — the glyph's own
+    // anchor #1 — not at the baseline. Subsequent letters within the same
+    // word are joined to the previous letter via a curved bridge that
+    // matches exit and entry tangents.
+    final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
+    if (addBridge) {
       final firstP0 = mainStroke.beziers.first.first;
-      final worldP0 = Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
-      final baselineY = 70.0 * scale;
-      if (worldP0.dy < baselineY - 1.0) {
-        final approachStart = Offset(worldP0.dx, baselineY);
-        points.add(approachStart);
-        _appendCurvedBridge(
-          approachStart,
-          worldP0,
-          const Offset(0, -1),
-          _glyphEntryTangent(glyph),
-          points,
-        );
-        firstBezierOfStroke = false;
-      } else {
-        firstBezierOfStroke = true;
-      }
-    } else {
-      final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
-      if (addBridge) {
-        final firstP0 = mainStroke.beziers.first.first;
-        final bridgeEnd =
-            Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
-        final prevGlyph = cursiveGlyphs[word[letterIdx - 1]]!;
-        _appendCurvedBridge(
-          points.last,
-          bridgeEnd,
-          _glyphExitTangent(prevGlyph),
-          _glyphEntryTangent(glyph),
-          points,
-        );
-      }
-      firstBezierOfStroke = !addBridge;
+      final bridgeEnd =
+          Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
+      final prevGlyph = cursiveGlyphs[word[letterIdx - 1]]!;
+      _appendCurvedBridge(
+        points.last,
+        bridgeEnd,
+        _glyphExitTangent(prevGlyph),
+        _glyphEntryTangent(glyph),
+        points,
+      );
     }
+    bool firstBezierOfStroke = !addBridge;
     for (var i = 0; i < mainStroke.beziers.length; i++) {
       final translated = mainStroke.beziers[i]
           .map((p) => Offset((p.dx + cursorX) * scale, p.dy * scale))
