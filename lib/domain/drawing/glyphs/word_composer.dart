@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Offset;
 
 import 'bezier.dart';
@@ -15,6 +16,11 @@ const double defaultUnitSpaceWidth = 30;
 /// breathing room between letter bodies that would otherwise sit too close
 /// after lead-in/lead-out curve stripping.
 const double defaultUnitLetterSpacing = 8.0;
+
+/// Italic-style forward lean applied to the whole composition after letter
+/// composition. Shear pivots around the baseline so x-stays-anchored there
+/// while ascenders lean right and descenders trail left.
+const double defaultSlantDegrees = 10.0;
 
 /// One traceable composition (single word or whole phrase), possibly with
 /// multiple discrete strokes.
@@ -54,7 +60,11 @@ class ComposedPath {
 /// those as required pen-up boundaries.
 ///
 /// Throws [ArgumentError] on any character without a glyph in [cursiveGlyphs].
-ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
+ComposedPath composeWord(
+  String word, {
+  double scale = defaultGlyphScale,
+  double slantDegrees = defaultSlantDegrees,
+}) {
   if (word.isEmpty) {
     return const ComposedPath(
       points: [],
@@ -79,6 +89,7 @@ ComposedPath composeWord(String word, {double scale = defaultGlyphScale}) {
     letterCenterX: letterCenterX,
     strokeStartIndices: strokeStartIndices,
   );
+  _applySlant(points, scale, slantDegrees);
   return ComposedPath(
     points: points,
     letterStartIndices: letterStartIndices,
@@ -99,6 +110,7 @@ ComposedPath composePhrase(
   String phrase, {
   double scale = defaultGlyphScale,
   double unitSpaceWidth = defaultUnitSpaceWidth,
+  double slantDegrees = defaultSlantDegrees,
 }) {
   final words = phrase.split(' ').where((w) => w.isNotEmpty).toList();
   if (words.isEmpty) {
@@ -133,6 +145,8 @@ ComposedPath composePhrase(
       addBaselineApproach: true,
     );
   }
+
+  _applySlant(points, scale, slantDegrees);
 
   return ComposedPath(
     points: points,
@@ -184,16 +198,23 @@ double _appendWord({
     bool firstBezierOfStroke;
 
     if (letterIdx == 0 && addBaselineApproach && mainStroke.beziers.isNotEmpty) {
-      // Prepend a straight approach from the baseline down to P0 so the stroke
-      // starts at a natural pen-down point (baseline Y) rather than mid-letter.
+      // Prepend a smooth approach from the baseline up into the letter's
+      // first stroke. The pen rises from the baseline (tangent up) and eases
+      // into the letter's entry tangent.
       final firstP0 = mainStroke.beziers.first.first;
       final worldP0 = Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
       final baselineY = 70.0 * scale;
       if (worldP0.dy < baselineY - 1.0) {
         final approachStart = Offset(worldP0.dx, baselineY);
         points.add(approachStart);
-        _appendStraightBridge(approachStart, worldP0, points);
-        firstBezierOfStroke = false; // worldP0 already added by bridge
+        _appendCurvedBridge(
+          approachStart,
+          worldP0,
+          const Offset(0, -1),
+          _glyphEntryTangent(glyph),
+          points,
+        );
+        firstBezierOfStroke = false;
       } else {
         firstBezierOfStroke = true;
       }
@@ -203,7 +224,14 @@ double _appendWord({
         final firstP0 = mainStroke.beziers.first.first;
         final bridgeEnd =
             Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
-        _appendStraightBridge(points.last, bridgeEnd, points);
+        final prevGlyph = cursiveGlyphs[word[letterIdx - 1]]!;
+        _appendCurvedBridge(
+          points.last,
+          bridgeEnd,
+          _glyphExitTangent(prevGlyph),
+          _glyphEntryTangent(glyph),
+          points,
+        );
       }
       firstBezierOfStroke = !addBridge;
     }
@@ -252,12 +280,57 @@ double _appendWord({
   return cursorX;
 }
 
-void _appendStraightBridge(Offset start, Offset end, List<Offset> points) {
-  for (var i = 1; i < _pointsPerCurve; i++) {
-    final t = i / (_pointsPerCurve - 1);
-    points.add(Offset(
-      start.dx + (end.dx - start.dx) * t,
-      start.dy + (end.dy - start.dy) * t,
-    ));
+/// Bezier bridge from `start` to `end` that leaves `start` along `exitTangent`
+/// and arrives at `end` along `entryTangent` (both unit vectors in world
+/// coords). Adds 19 sampled points (skipping `start`, including `end`).
+void _appendCurvedBridge(
+  Offset start,
+  Offset end,
+  Offset exitTangent,
+  Offset entryTangent,
+  List<Offset> points,
+) {
+  final chord = end - start;
+  final chordLen = chord.distance;
+  if (chordLen < 0.001) return;
+  final handleLen = chordLen / 3;
+  final p1 = start + exitTangent * handleLen;
+  final p2 = end - entryTangent * handleLen;
+  final sampled = sampleCubic([start, p1, p2, end], _pointsPerCurve);
+  for (var i = 1; i < sampled.length; i++) {
+    points.add(sampled[i]);
+  }
+}
+
+/// Unit tangent at the entry of a glyph's main stroke: direction from
+/// P0 toward P1 of the first bezier. Same direction in glyph and world
+/// coords (uniform scale).
+Offset _glyphEntryTangent(CursiveGlyph glyph) {
+  final b = glyph.strokes.first.beziers.first;
+  final dir = b[1] - b[0];
+  final len = dir.distance;
+  return len < 0.001 ? const Offset(1, 0) : dir / len;
+}
+
+/// Unit tangent at the exit of a glyph's main stroke: direction from
+/// P2 toward P3 of the last bezier.
+Offset _glyphExitTangent(CursiveGlyph glyph) {
+  final b = glyph.strokes.first.beziers.last;
+  final dir = b[3] - b[2];
+  final len = dir.distance;
+  return len < 0.001 ? const Offset(1, 0) : dir / len;
+}
+
+/// Apply a baseline-anchored horizontal shear (italic slant) to all points
+/// in place. Points above the baseline (smaller y) shift right; descenders
+/// shift left. `letterCenterX` is measured at the baseline so it remains
+/// correct without modification.
+void _applySlant(List<Offset> points, double scale, double slantDegrees) {
+  if (slantDegrees == 0 || points.isEmpty) return;
+  final baselineY = 70.0 * scale;
+  final tan = math.tan(slantDegrees * math.pi / 180);
+  for (var i = 0; i < points.length; i++) {
+    final p = points[i];
+    points[i] = Offset(p.dx + (baselineY - p.dy) * tan, p.dy);
   }
 }

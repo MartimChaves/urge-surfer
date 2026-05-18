@@ -91,17 +91,39 @@ void main() {
   });
 
   group('WeightedTracingController pen physics', () {
-    test('finger held far away with one short tick leaves pen mostly behind',
+    test('one short tick moves the pen by penSpeed * dt regardless of distance',
         () {
       final c = WeightedTracingController(
         templatePoints: straightPath,
-        timeConstant: 0.4,
+        penSpeed: 100.0,
+      )..penDown();
+      c.setFingerTarget(const Offset(1000, 0));
+      c.tick(const Duration(milliseconds: 16));
+      // penSpeed * dt = 100 * 0.016 = 1.6 px exactly.
+      expect(c.penPosition.dx, closeTo(1.6, 1e-9));
+      expect(c.penPosition.dy, closeTo(0, 1e-9));
+    });
+
+    test('pen does not overshoot when the finger is closer than penSpeed * dt',
+        () {
+      final c = WeightedTracingController(
+        templatePoints: straightPath,
+        penSpeed: 1000.0,
+      )..penDown();
+      // penSpeed * dt = 1000 * 0.016 = 16 px, but finger is only 1 px away.
+      c.setFingerTarget(const Offset(1, 0));
+      c.tick(const Duration(milliseconds: 16));
+      expect(c.penPosition, const Offset(1, 0));
+    });
+
+    test('penSpeed = infinity snaps the pen to the finger in one tick', () {
+      final c = WeightedTracingController(
+        templatePoints: straightPath,
+        penSpeed: double.infinity,
       )..penDown();
       c.setFingerTarget(const Offset(100, 0));
       c.tick(const Duration(milliseconds: 16));
-      // alpha = 1 - exp(-0.016/0.4) ≈ 0.0392, so pen ≈ (3.92, 0).
-      expect(c.penPosition.dx, lessThan(5));
-      expect(c.penPosition.dx, greaterThan(3));
+      expect(c.penPosition, const Offset(100, 0));
     });
 
     test('finger at end + many ticks drives pen to end and completes letter',

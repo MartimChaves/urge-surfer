@@ -1,16 +1,17 @@
-import 'dart:math' as math;
 import 'dart:ui' show Offset;
 
-/// Drives the lagged "pen" along a multi-stroke template path while the user's
+/// Drives the "pen" along a multi-stroke template path while the user's
 /// finger is on the canvas.
 ///
 /// State machine:
 /// - **Pen up** (default at construction, also after [penUp]): the pen is
 ///   frozen at its current position, [setFingerTarget] is ignored, and
 ///   [tick] is a no-op. The user must touch the canvas to make any progress.
-/// - **Pen down** (after [penDown]): the pen low-pass-filters toward the
-///   finger target, and [templateIndex] advances within the current stroke
-///   when the pen reaches each next template point.
+/// - **Pen down** (after [penDown]): the pen moves toward the finger target
+///   at a constant [penSpeed] (pixels per second), and [templateIndex]
+///   advances within the current stroke when the pen reaches each next
+///   template point. [penSpeed] of [double.infinity] snaps the pen to the
+///   finger in a single tick.
 ///
 /// Strokes are demarcated by [strokeStartIndices]. Within a stroke, the pen
 /// advances continuously. Between strokes, the user must lift their finger
@@ -19,7 +20,7 @@ import 'dart:ui' show Offset;
 class WeightedTracingController {
   final List<Offset> templatePoints;
   final List<int> strokeStartIndices;
-  double timeConstant;
+  double penSpeed;
   final double advanceThreshold;
 
   Offset _penPosition;
@@ -31,13 +32,13 @@ class WeightedTracingController {
   WeightedTracingController({
     required this.templatePoints,
     List<int>? strokeStartIndices,
-    this.timeConstant = 0.4,
+    this.penSpeed = 100.0,
     this.advanceThreshold = 8.0,
   })  : assert(
           templatePoints.length >= 2,
           'Template needs at least 2 points (start and end).',
         ),
-        assert(timeConstant > 0, 'timeConstant must be positive.'),
+        assert(penSpeed > 0, 'penSpeed must be positive.'),
         assert(advanceThreshold > 0, 'advanceThreshold must be positive.'),
         strokeStartIndices = strokeStartIndices ?? const [0],
         _penPosition = templatePoints.first,
@@ -111,8 +112,16 @@ class WeightedTracingController {
     final dtSec = dt.inMicroseconds / 1e6;
     if (dtSec <= 0) return;
 
-    final alpha = 1 - math.exp(-dtSec / timeConstant);
-    _penPosition = Offset.lerp(_penPosition, _fingerTarget, alpha)!;
+    if (penSpeed == double.infinity) {
+      _penPosition = _fingerTarget;
+    } else {
+      final delta = _fingerTarget - _penPosition;
+      final dist = delta.distance;
+      final step = penSpeed * dtSec;
+      _penPosition = (dist <= step)
+          ? _fingerTarget
+          : _penPosition + delta * (step / dist);
+    }
 
     final strokeEnd = _strokeEndIndex(_currentStrokeIndex);
     while (_templateIndex < strokeEnd &&

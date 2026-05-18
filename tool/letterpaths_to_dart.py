@@ -2,10 +2,10 @@
 """Convert vendored letterpaths cursive JSON files into a Dart const map.
 
 Usage:
-    python3 tool/letterpaths_to_dart.py > lib/domain/drawing/glyphs/cursive_glyphs.dart
+    python3 tool/letterpaths_to_dart.py > lib/domain/drawing/glyphs/lowercase_glyphs.dart
 
 Input:  vendor/letterpaths/entry-low/{a..z}-lower-cursive-bezier-entry-low.json
-Output: a Dart source file declaring `cursiveGlyphs: Map<String, CursiveGlyph>`.
+Output: `lowercase_glyphs.dart` declaring `lowercaseGlyphs: Map<String, CursiveGlyph>`.
 
 Coordinate normalization (per letter, since each letterpaths JSON uses its own
 guides): every letter's points are transformed so its baseline maps to y=70 and
@@ -19,8 +19,9 @@ records) are merged into a single stroke. Non-continuous main strokes (e.g. x's
 two diagonals) and 'deferred' strokes (i and j dots, t crossbar) are kept as
 separate strokes; the canvas treats stroke boundaries as required pen lifts.
 
-Uppercase 'I' and the period '.' are hand-authored in the same coordinate
-system and appended unchanged.
+Uppercase glyphs are hand-authored in `uppercase_glyphs.dart`; punctuation in
+`punctuation_glyphs.dart`. The aggregator `cursive_glyphs.dart` merges all
+three maps into the public `cursiveGlyphs`.
 """
 import json
 from pathlib import Path
@@ -125,60 +126,24 @@ def emit_letter(letter: str) -> str:
     return "\n".join(out)
 
 
-HAND_AUTHORED_TAIL = """  'I': CursiveGlyph(
-    advanceWidth: 34,
-    strokes: [
-      CursiveStroke(beziers: [
-        // Sweep up from baseline-left to top of ascender
-        [Offset(2, 70), Offset(-2, 48), Offset(5, 18), Offset(13, 4)],
-        // Broad arch over the top: right across to ~x=30, then back left to x=20
-        [Offset(13, 4), Offset(26, -4), Offset(34, 10), Offset(21, 24)],
-        // Descend back through to baseline
-        [Offset(21, 24), Offset(13, 44), Offset(9, 60), Offset(11, 70)],
-        // Exit flourish to the right
-        [Offset(11, 70), Offset(19, 76), Offset(28, 70), Offset(34, 65)],
-      ]),
-    ],
-  ),
-  '.': CursiveGlyph(
-    advanceWidth: 15,
-    strokes: [
-      CursiveStroke(beziers: [
-        [Offset(0, 65), Offset(3, 68), Offset(5, 70), Offset(7, 70)],
-        [Offset(7, 70), Offset(10, 70), Offset(12, 68), Offset(10, 65)],
-        [Offset(10, 65), Offset(12, 65), Offset(13, 65), Offset(15, 65)],
-      ]),
-    ],
-  ),"""
-
-HEADER = """// GENERATED FILE — do not edit by hand.
-// Regenerate via: python3 tool/letterpaths_to_dart.py > lib/domain/drawing/glyphs/cursive_glyphs.dart
+HEADER = """// GENERATED FILE — initial seed from letterpaths. Hand-editable.
+// Regenerate via: python3 tool/letterpaths_to_dart.py
+//   (Re-running OVERWRITES this file. Back up tweaks if you've hand-tuned.)
 //
-// Lowercase a-z glyphs are derived from the letterpaths cursive dataset
-// (MIT-licensed, github.com/RobinL/letterpaths). License preserved in
-// vendor/letterpaths/LICENSE.
+// Lowercase a-z glyphs are initially derived from the letterpaths cursive
+// dataset (MIT-licensed, github.com/RobinL/letterpaths). License preserved
+// in vendor/letterpaths/LICENSE.
 //
-// Each letter is normalized into our coord system:
+// Coord system (same as uppercase / punctuation):
 //   x in 0..advanceWidth (left to right)
-//   y baseline = 70, x-height top = 30, y grows downward
+//   y: baseline = 70, x-height top = 30, y grows downward
 //   ascender region (y < 30) and descender region (y > 70) are open-ended
-//
-// 'I' and '.' are hand-authored in the same coord system.
 
 import 'dart:ui' show Offset;
 
-class CursiveGlyph {
-  final List<CursiveStroke> strokes;
-  final double advanceWidth;
-  const CursiveGlyph({required this.strokes, required this.advanceWidth});
-}
+import 'cursive_glyph_types.dart';
 
-class CursiveStroke {
-  final List<List<Offset>> beziers;
-  const CursiveStroke({required this.beziers});
-}
-
-const Map<String, CursiveGlyph> cursiveGlyphs = {
+const Map<String, CursiveGlyph> lowercaseGlyphs = {
 """
 
 
@@ -186,7 +151,6 @@ def main() -> None:
     print(HEADER, end="")
     for letter in "abcdefghijklmnopqrstuvwxyz":
         print(emit_letter(letter))
-    print(HAND_AUTHORED_TAIL)
     print("};")
 
 
