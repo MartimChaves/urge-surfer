@@ -24,6 +24,10 @@ const double _cornerAngleThresholdRad = math.pi / 2; // 90 degrees
 /// How long the engorge-and-fade flash plays after a chevron is passed.
 const double _chevronFlashSec = 0.6;
 
+/// Largest square tracing viewport. Callers may reduce this to the horizontal
+/// space available on compact phones.
+const double maximumTracingCanvasSize = 320.0;
+
 class DrawingCanvas extends StatefulWidget {
   final ComposedPath path;
   final VoidCallback onLetterComplete;
@@ -35,8 +39,8 @@ class DrawingCanvas extends StatefulWidget {
     super.key,
     required this.path,
     required this.onLetterComplete,
-    this.width = 320,
-    this.height = 320,
+    this.width = maximumTracingCanvasSize,
+    this.height = maximumTracingCanvasSize,
     this.lagEnabled = true,
   });
 
@@ -96,8 +100,9 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     _segmentDirByStroke = [];
     for (var s = 0; s < starts.length; s++) {
       final sStart = starts[s];
-      final sEnd =
-          s + 1 < starts.length ? starts[s + 1] - 1 : points.length - 1;
+      final sEnd = s + 1 < starts.length
+          ? starts[s + 1] - 1
+          : points.length - 1;
       final corners = _detectCorners(points, sStart, sEnd);
       final ends = [...corners, sEnd];
 
@@ -139,8 +144,10 @@ class _DrawingCanvasState extends State<DrawingCanvas>
       final l1 = t1.distance;
       final l2 = t2.distance;
       if (l1 < 0.001 || l2 < 0.001) continue;
-      final cos =
-          ((t1.dx * t2.dx + t1.dy * t2.dy) / (l1 * l2)).clamp(-1.0, 1.0);
+      final cos = ((t1.dx * t2.dx + t1.dy * t2.dy) / (l1 * l2)).clamp(
+        -1.0,
+        1.0,
+      );
       final angle = math.acos(cos);
       if (angle >= _cornerAngleThresholdRad) {
         if (!inRegion || angle > peakAngle) {
@@ -277,9 +284,12 @@ class _DrawingCanvasState extends State<DrawingCanvas>
     final segIdx = _prevCurrentSegment;
     final mids = _segmentMidByStroke[si];
     final dirs = _segmentDirByStroke[si];
-    final nextChevronIdx = (segIdx >= 0 && segIdx < mids.length) ? mids[segIdx] : -1;
-    final nextChevronDir =
-        (segIdx >= 0 && segIdx < dirs.length) ? dirs[segIdx] : Offset.zero;
+    final nextChevronIdx = (segIdx >= 0 && segIdx < mids.length)
+        ? mids[segIdx]
+        : -1;
+    final nextChevronDir = (segIdx >= 0 && segIdx < dirs.length)
+        ? dirs[segIdx]
+        : Offset.zero;
     return Listener(
       behavior: HitTestBehavior.opaque,
       onPointerDown: _onPointerDown,
@@ -383,7 +393,12 @@ class _TracingPainter extends CustomPainter {
   }
 
   void _drawChevronAt(
-      Canvas canvas, int idx, Offset dir, double sizeMul, double alpha) {
+    Canvas canvas,
+    int idx,
+    Offset dir,
+    double sizeMul,
+    double alpha,
+  ) {
     if (alpha <= 0) return;
     if (idx < 0 || idx >= templatePoints.length) return;
     final dirLen = dir.distance;
@@ -406,12 +421,14 @@ class _TracingPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
     final path = Path()
       ..moveTo(
-          tip.dx + (bx * cos - by * sin) * size,
-          tip.dy + (bx * sin + by * cos) * size)
+        tip.dx + (bx * cos - by * sin) * size,
+        tip.dy + (bx * sin + by * cos) * size,
+      )
       ..lineTo(tip.dx, tip.dy)
       ..lineTo(
-          tip.dx + (bx * cos + by * sin) * size,
-          tip.dy + (-bx * sin + by * cos) * size);
+        tip.dx + (bx * cos + by * sin) * size,
+        tip.dy + (-bx * sin + by * cos) * size,
+      );
     canvas.drawPath(path, paint);
   }
 
@@ -454,11 +471,7 @@ class _TracingPainter extends CustomPainter {
   }
 
   void _drawPen(Canvas canvas) {
-    canvas.drawCircle(
-      penPosition,
-      10,
-      Paint()..color = seedColor,
-    );
+    canvas.drawCircle(penPosition, 10, Paint()..color = seedColor);
   }
 
   void _drawFingerCursor(Canvas canvas) {

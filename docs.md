@@ -251,7 +251,8 @@ The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizon
 ### Layout
 
 - `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
-- `lib/domain/drawing/glyphs/cursive_glyphs.dart` — a `Map<String, CursiveGlyph>` with each glyph's strokes (each containing bezier control points) and advance width in unit coordinates. **Generated** from the letterpaths cursive dataset by `tool/letterpaths_to_dart.py`; lowercase a–z come from `vendor/letterpaths/entry-low/*.json` (MIT-licensed, attribution preserved at `vendor/letterpaths/LICENSE`). Uppercase `I` and the period `.` are hand-authored in the same coord system. To refresh: `python3 tool/letterpaths_to_dart.py > lib/domain/drawing/glyphs/cursive_glyphs.dart`. The converter strips `lead-in`/`lead-out` curves at conversion time (those flourishes overlap with neighbours and would force the controller to backtrack); the composer adds short straight bridges between consecutive letters in a word to fill the resulting gap.
+- `lib/domain/drawing/glyphs/cursive_glyphs.dart` — aggregates lowercase, uppercase, and punctuation maps of editable `CursiveGlyph` Bézier centerlines. Lowercase paths are seeded from the MIT-licensed letterpaths dataset; uppercase and punctuation are hand-authored.
+- `tool/glyph_editor.py` — edits those centerlines directly. Its optional Sacramento overlay renders the vendored OFL font beneath the paths, normalized to the same baseline and x-height, so the existing anchors can be reshaped without losing deliberate stroke order.
 - `lib/domain/drawing/glyphs/word_composer.dart` — exposes `composeWord(word, scale)` and `composePhrase(phrase, scale, unitSpaceWidth)`, both returning the unified `ComposedPath { points, letterStartIndices, letterEndIndices, letterCenterX, strokeStartIndices }`. `points` is the dense path; `letterStartIndices`/`letterEndIndices` are inclusive ranges per letter; `strokeStartIndices` marks where each stroke begins. `composePhrase` does **not** insert any bridging samples between words — between strokes, the points list jumps in absolute coords and the painter must `moveTo` rather than `lineTo` at those indices. The user must lift their finger and tap near the next stroke's start to begin tracing it.
 - `lib/ui/ritual/widgets/drawing_canvas.dart` — handles raw pointer events via `Listener` (so taps without drag also fire). On pointer-down: if the current stroke is complete, the touch must land within `_nextStrokeTouchGate` (100 px world-space) of `controller.nextStrokeStartPoint` for the canvas to call `advanceStroke()` and `penDown()`; otherwise the touch is ignored. On pointer-move: forwards finger world-position into `setFingerTarget`. On pointer-up/cancel: calls `penUp()` (pen freezes; templateIndex stays). Camera target is `canvasWidth/2 − letterCenterX[i]` where `i` is whichever letter contains the pen, with one carve-out: when the current stroke is complete and a next stroke exists, the target jumps to the next stroke's first letter so the user can see where to tap. `panOffsetX` tweens toward the target via a low-pass filter (`τ = 0.25 s`).
 - `lib/ui/ritual/ritual_flow_screen.dart` — composes the entire phrase once with `composePhrase` and passes the resulting `ComposedPath` to a single `DrawingCanvas`. `onLetterComplete` fires once at end-of-phrase, advancing to the post-slider step.
@@ -263,19 +264,29 @@ Glyphs are authored in unit coordinates with this convention:
 - `x ∈ [0, advanceWidth]` left-to-right.
 - `y ∈ [0, 100]` top-to-bottom (Flutter Y).
 - Baseline at `y = 70`. x-height (top of `a`, `c`, `e`, `n`) at `y = 30`. Ascender top (`b`, `l`, `t`, `I`) at `y = 10`. Descender bottom (`g`) at `y = 95`.
-- Entry of every glyph is at `(0, ~65)`; exit is at `(advanceWidth, ~65)`. Adjacent letters meet at the same y-height by design — no explicit connector strokes between letters are needed; the entry up-swoop of each letter *is* the visual connector.
+- Entry and exit anchors remain explicit parts of each centerline. `composeWord` uses each editable advance width and adds a tangent-matched cubic bridge between consecutive letters.
 
-`composeWord` scales these unit points by `defaultGlyphScale = 3` so the rendered letters are roughly 75–150 px wide and 255 px tall, which is large and readable on a phone screen.
+`composeWord` scales these unit points by `defaultGlyphScale = 2.2`, adds 8 unit coordinates of letter spacing, and applies the existing 10-degree cursive slant.
+
+
+### Glyph editor
+
+Launch the editor from the repository root:
+
+```sh
+sudo apt install python3-tk python3-pil
+python3 tool/glyph_editor.py
+```
+
+The **Sacramento overlay** toggle is enabled by default when Pillow and the vendored font are available. Its adjacent slider controls opacity. The purple path remains the editable centerline; red points are endpoint anchors and blue points are control handles. The overlay uses Sacramento font metrics to align with the editor baseline and x-height, and it stays aligned while panning or zooming. Use **Save to file** to persist edits to the lowercase, uppercase, and punctuation source files.
 
 ### Multi-stroke letters
 
-The four lowercase letters that traditionally lift the pen — `i` (body + dot), `j` (body + dot), `t` (stem + crossbar), and `x` (two diagonals) — are stored as multi-stroke glyphs. The first stroke is always the joinable main; subsequent strokes are deferred and emitted by the composer at the end of the word's main trace. Pattern: trace the entire word body in one continuous stroke, then lift and tap each deferred mark — the conventional way cursive is written ("dot the i, cross the t" after the word body).
-
-Continuous main strokes within a letter (e.g. `t`'s pre-merge data has two physically continuous main strokes for the up-and-down stem motion) are merged at conversion time, so the user sees one stroke for those.
+The centerline data explicitly records stroke order. Dots, crossbars, and other intentional pen lifts remain separate deferred strokes rather than being inferred from a filled font outline.
 
 ### Pan-scroll and pen-up/down
 
-The drawing canvas is 320×320 px by default. The phrase `"I can be gentle."` at scale 3 is ~1500 px wide — far wider than the canvas. Camera behavior:
+The drawing canvas is square and at most 320×320 logical pixels. On compact screens it shrinks to the horizontal space supplied by its parent instead of overflowing. Long phrases remain wider than the viewport. Camera behavior:
 
 - **While the pen is inside a letter** (`templateIndex ∈ [letterStartIndices[i], letterEndIndices[i]]`): camera target is `letterCenterX[i]`. The canvas sits still on the active letter.
 - **When the current stroke is complete and a next stroke exists**: camera target jumps to the first letter of the next stroke. The user sees the next word slide in from the right, with a small target ring drawn at the next stroke's first template point as a visual prompt to tap there.
@@ -308,11 +319,11 @@ Gestures: `_toWorld(local)` translates a local touch into world coords by subtra
 
 ### advanceThreshold scaling
 
-`WeightedTracingController` defaults to `advanceThreshold = 8` in template-coord units. With the composer scaling all points by 3, the canvas constructs the controller with `advanceThreshold = 8 * defaultGlyphScale = 24` so the pen advances at the same perceived rate as before scaling. The `word_composer_test.dart` "no gaps wider than threshold" test guards the inverse property — sample density is fine enough that the pen never gets stuck between two template points.
+`WeightedTracingController` defaults to `advanceThreshold = 8` in template-coord units. With the composer scaling all points by 2.2, the canvas constructs the controller with `advanceThreshold = 8 * defaultGlyphScale = 17.6` so the pen advances at the same perceived rate as before scaling. The `word_composer_test.dart` no-gaps test ensures sample density remains fine enough that the pen cannot get stuck between template points.
 
 ### Character set
 
-Lowercase `a–z` (from letterpaths), uppercase `I` and period `.` (hand-authored). Other capitals needed by `assets/phrases/general.json` (B, L, M, O, R, S, T, W) and other punctuation are not yet authored — `composeWord`/`composePhrase` throws `ArgumentError` on any character not in `cursiveGlyphs`. When phrase loading from JSON lands, that loader should pre-validate against the available glyph map and skip or substitute unsupported characters.
+All basic Latin letters `a–z` and `A–Z`, plus period `.`, have editable centerlines. Sacramento is a visual reference in the editor, not an automatic source of stroke order. `composeWord`/`composePhrase` continues to throw `ArgumentError` for unsupported punctuation or symbols.
 
 ### Visual iteration warning
 

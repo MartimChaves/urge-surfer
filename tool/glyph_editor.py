@@ -7,11 +7,15 @@ control points to refine each letter, and writes edits back to the file.
 Run:
     python3 tool/glyph_editor.py
 
-No third-party deps — uses tkinter from the standard library. On Debian/Ubuntu
-that needs `sudo apt install python3-tk` if not already installed.
+The editor itself uses tkinter from the standard library. The optional
+Sacramento overlay also needs Pillow. On Debian/Ubuntu:
+
+    sudo apt install python3-tk python3-pil
 
 Features:
     * Letter picker + drag anchors (red) / handles (blue).
+    * Optional Sacramento reference overlay, aligned to the baseline and x-height,
+      with adjustable opacity.
     * Click an anchor to see its coords; click a handle to see its angle and
       length relative to its parent anchor.
     * Linked anchors (P3 of bezier i ≈ P0 of bezier i+1) move together.
@@ -34,6 +38,8 @@ picker lists every glyph; on save each glyph's edits are written back to its
 original source file. File-level header comments round-trip; inline `// ...`
 comments WITHIN a bezier list are dropped on save.
 """
+import base64
+import io
 import math
 import re
 from pathlib import Path
@@ -51,8 +57,24 @@ except ImportError:
     messagebox = None  # type: ignore
     _HAS_TK = False
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    _HAS_PIL = True
+except ImportError:
+    Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
+    _HAS_PIL = False
+
 REPO = Path(__file__).resolve().parent.parent
 GLYPHS_DIR = REPO / "lib" / "domain" / "drawing" / "glyphs"
+SACRAMENTO_FONT = REPO / "vendor" / "sacramento" / "Sacramento-Regular.ttf"
+
+# Sacramento metrics: x-height 627 units in a 2048-unit em. The overlay is
+# normalized onto the editor baseline (y=70) and x-height guide (y=30).
+SACRAMENTO_UNITS_PER_EM = 2048
+SACRAMENTO_X_HEIGHT = 627
+SACRAMENTO_RENDER_SIZE = 1024
 
 # Source files the editor manages. The header (everything from the first line
 # up to and including `const Map<...> XxxGlyphs = {`) is captured from disk
@@ -247,6 +269,35 @@ def reverse_bezier_list(beziers):
     ]
 
 
+def load_sacramento_reference(character):
+    # Return a grayscale mask and bounds in editor coordinates. Keeping this
+    # transform separate from Tk makes alignment testable on headless hosts.
+    if not _HAS_PIL:
+        raise RuntimeError("Pillow is required for the Sacramento overlay")
+    if not SACRAMENTO_FONT.exists():
+        raise FileNotFoundError(SACRAMENTO_FONT)
+
+    font = ImageFont.truetype(str(SACRAMENTO_FONT), SACRAMENTO_RENDER_SIZE)
+    left, top, right, bottom = font.getbbox(character, anchor="ls")
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.text((-left, -top), character, font=font, fill=255, anchor="ls")
+
+    font_units_per_pixel = SACRAMENTO_UNITS_PER_EM / SACRAMENTO_RENDER_SIZE
+    glyph_units_per_pixel = 40.0 / (
+        SACRAMENTO_X_HEIGHT / font_units_per_pixel
+    )
+    bounds = (
+        left * glyph_units_per_pixel,
+        70.0 + top * glyph_units_per_pixel,
+        right * glyph_units_per_pixel,
+        70.0 + bottom * glyph_units_per_pixel,
+    )
+    return mask, bounds
+
+
 # --- Editor ---
 
 
@@ -294,6 +345,8 @@ class GlyphEditor:
         self.pan_x = 0.0
         self.pan_y = 0.0
         self.zoom = 1.0
+        self._sacramento_cache = {}
+        self._overlay_photo = None
 
         # Interaction state
         self.mode = MODE_SELECT
@@ -349,6 +402,24 @@ class GlyphEditor:
             variable=self.translate_var,
             command=self._on_translate_toggle,
         ).pack(side="left", padx=(16, 4))
+
+        overlay_available = _HAS_PIL and SACRAMENTO_FONT.exists()
+        self.overlay_var = tk.BooleanVar(value=overlay_available)
+        self.overlay_toggle = tk.Checkbutton(
+            toolbar, text="Sacramento overlay",
+            variable=self.overlay_var,
+            command=self._redraw,
+            state="normal" if overlay_available else "disabled",
+        )
+        self.overlay_toggle.pack(side="left", padx=(12, 2))
+        self.overlay_opacity_var = tk.DoubleVar(value=28.0)
+        self.overlay_opacity = ttk.Scale(
+            toolbar, from_=5.0, to=80.0, length=90,
+            variable=self.overlay_opacity_var,
+            command=lambda _value: self._redraw(),
+            state="normal" if overlay_available else "disabled",
+        )
+        self.overlay_opacity.pack(side="left", padx=(2, 8))
 
         tk.Button(
             toolbar, text="Reset view", command=self._reset_view
@@ -762,11 +833,48 @@ class GlyphEditor:
 
     # --- Drawing ---
 
+    def _draw_sacramento_overlay(self):
+        if not self.overlay_var.get() or not _HAS_PIL:
+            self._overlay_photo = None
+            return
+        cached = self._sacramento_cache.get(self.current_key)
+        if cached is None:
+            try:
+                cached = load_sacramento_reference(self.current_key)
+            except (OSError, RuntimeError) as error:
+                self.overlay_var.set(False)
+                self._overlay_photo = None
+                self._status(f"Sacramento overlay unavailable: {error}")
+                return
+            self._sacramento_cache[self.current_key] = cached
+
+        mask, (left, top, right, bottom) = cached
+        scale = self._eff_scale()
+        width = max(1, round((right - left) * scale))
+        height = max(1, round((bottom - top) * scale))
+        resized_mask = mask.resize(
+            (width, height), Image.Resampling.LANCZOS
+        )
+        opacity = max(0.0, min(1.0, self.overlay_opacity_var.get() / 100.0))
+        alpha = resized_mask.point(lambda value: round(value * opacity))
+        overlay = Image.new("RGBA", resized_mask.size, (126, 87, 194, 0))
+        overlay.putalpha(alpha)
+        png = io.BytesIO()
+        overlay.save(png, format="PNG")
+        encoded = base64.b64encode(png.getvalue()).decode("ascii")
+        self._overlay_photo = tk.PhotoImage(data=encoded)
+        x, y = self._to_canvas(left, top)
+        self.canvas.create_image(
+            x, y, anchor="nw", image=self._overlay_photo, tags="overlay"
+        )
+
     def _redraw(self):
         self.canvas.delete("all")
         adv, strokes = self.glyphs_working[self.current_key]
         w = self.canvas.winfo_width() or 1100
         h = self.canvas.winfo_height() or 800
+
+        self._draw_sacramento_overlay()
 
         for y, label in REFERENCE_LINES:
             _, cy = self._to_canvas(0, y)

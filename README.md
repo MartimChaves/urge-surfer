@@ -51,6 +51,8 @@ Source code: [AGPL-3.0](LICENSE).
 
 Phrase library content (`assets/phrases/`): [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
+Sacramento reference font: [SIL Open Font License 1.1](vendor/sacramento/OFL.txt).
+
 ## Acknowledgements
 
 Mechanically informed by:
@@ -59,5 +61,7 @@ Mechanically informed by:
 - Kristin Neff's research on self-compassion.
 - Peter Gollwitzer's research on implementation intentions ("if-then" plans).
 - Mueller & Oppenheimer (2014) and James & Engelhardt (2012) on the cognitive effects of handwriting versus typing.
+
+The editable lowercase centerlines are seeded from the MIT-licensed letterpaths dataset. Brian J. Bonislawsky's Sacramento typeface is distributed under the SIL Open Font License 1.1 and is vendored as an aligned reference overlay for the glyph editor.
 
 This project is not affiliated with any of the researchers, institutions, or projects above.

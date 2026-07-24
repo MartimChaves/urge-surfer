@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../domain/drawing/glyphs/word_composer.dart';
@@ -47,9 +49,7 @@ class _JustWriteScreenState extends State<JustWriteScreen> {
             : null,
       ),
       body: SafeArea(
-        child: inDrawing
-            ? _drawingArea(context)
-            : _picker(context),
+        child: inDrawing ? _drawingArea(context) : _picker(context),
       ),
     );
   }
@@ -62,10 +62,7 @@ class _JustWriteScreenState extends State<JustWriteScreen> {
       itemBuilder: (context, i) {
         final phrase = selfCompassionPhrases[i];
         return ListTile(
-          title: Text(
-            phrase,
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          title: Text(phrase, style: Theme.of(context).textTheme.titleMedium),
           onTap: () => _pick(phrase),
         );
       },
@@ -77,19 +74,26 @@ class _JustWriteScreenState extends State<JustWriteScreen> {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         const Spacer(),
-        DrawingCanvas(
-          path: _composed!,
-          onLetterComplete: _backToPicker,
-          lagEnabled: _lagEnabled,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final canvasSize = math.min(
+              maximumTracingCanvasSize,
+              constraints.maxWidth,
+            );
+            return DrawingCanvas(
+              path: _composed!,
+              onLetterComplete: _backToPicker,
+              width: canvasSize,
+              height: canvasSize,
+              lagEnabled: _lagEnabled,
+            );
+          },
         ),
         const Spacer(),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              'pen lag',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            Text('pen lag', style: Theme.of(context).textTheme.bodySmall),
             Switch(
               value: _lagEnabled,
               onChanged: (v) => setState(() => _lagEnabled = v),

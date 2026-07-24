@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,8 +25,7 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
   int _urgeBefore = 5;
   int _urgeAfter = 5;
 
-  late final String _phrase =
-      (selfCompassionPhrases.toList()..shuffle()).first;
+  late final String _phrase = (selfCompassionPhrases.toList()..shuffle()).first;
   late final ComposedPath _composedPhrase = composePhrase(_phrase);
 
   @override
@@ -63,29 +64,29 @@ class _RitualFlowScreenState extends ConsumerState<RitualFlowScreen> {
           padding: const EdgeInsets.all(24),
           child: switch (_step) {
             _Step.nameUrge => _NameUrgeStep(
-                controller: _urgeController,
-                onNext: () {
-                  if (_urgeController.text.trim().isNotEmpty) _advance();
-                },
-              ),
+              controller: _urgeController,
+              onNext: () {
+                if (_urgeController.text.trim().isNotEmpty) _advance();
+              },
+            ),
             _Step.preSlider => _SliderStep(
-                question: 'How strong is the urge right now?',
-                value: _urgeBefore,
-                onChanged: (v) => setState(() => _urgeBefore = v),
-                onNext: _advance,
-              ),
+              question: 'How strong is the urge right now?',
+              value: _urgeBefore,
+              onChanged: (v) => setState(() => _urgeBefore = v),
+              onNext: _advance,
+            ),
             _Step.drawing => _DrawingStep(
-                phrase: _phrase,
-                composedPhrase: _composedPhrase,
-                onComplete: _advance,
-              ),
+              phrase: _phrase,
+              composedPhrase: _composedPhrase,
+              onComplete: _advance,
+            ),
             _Step.postSlider => _SliderStep(
-                question: 'How strong is the urge now?',
-                value: _urgeAfter,
-                onChanged: (v) => setState(() => _urgeAfter = v),
-                onNext: _logAndExit,
-                nextLabel: 'Log wave',
-              ),
+              question: 'How strong is the urge now?',
+              value: _urgeAfter,
+              onChanged: (v) => setState(() => _urgeAfter = v),
+              onNext: _logAndExit,
+              nextLabel: 'Log wave',
+            ),
           },
         ),
       ),
@@ -198,10 +199,20 @@ class _DrawingStepState extends State<_DrawingStep> {
       children: [
         Text(widget.phrase, style: Theme.of(context).textTheme.titleLarge),
         const Spacer(),
-        DrawingCanvas(
-          path: widget.composedPhrase,
-          onLetterComplete: widget.onComplete,
-          lagEnabled: _lagEnabled,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final canvasSize = math.min(
+              maximumTracingCanvasSize,
+              constraints.maxWidth,
+            );
+            return DrawingCanvas(
+              path: widget.composedPhrase,
+              onLetterComplete: widget.onComplete,
+              width: canvasSize,
+              height: canvasSize,
+              lagEnabled: _lagEnabled,
+            );
+          },
         ),
         const Spacer(),
         Row(

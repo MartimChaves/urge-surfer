@@ -4,8 +4,12 @@ import 'dart:ui' show Offset;
 import 'bezier.dart';
 import 'cursive_glyphs.dart';
 
-const int _pointsPerCurve = 20;
-const double defaultGlyphScale = 3.0;
+const int _pointsPerCurve = 30;
+
+/// A middle-ground size for the restored centerline alphabet: large enough
+/// to feel expressive, while leaving room for ascenders and descenders in
+/// the responsive tracing viewport.
+const double defaultGlyphScale = 2.2;
 
 /// Default unit-coord cursor advance between words. Letter-to-letter advance
 /// inside a word is set by each glyph's [CursiveGlyph.advanceWidth]; this
@@ -200,8 +204,10 @@ double _appendWord({
     final bool addBridge = letterIdx > 0 && mainStroke.beziers.isNotEmpty;
     if (addBridge) {
       final firstP0 = mainStroke.beziers.first.first;
-      final bridgeEnd =
-          Offset((firstP0.dx + cursorX) * scale, firstP0.dy * scale);
+      final bridgeEnd = Offset(
+        (firstP0.dx + cursorX) * scale,
+        firstP0.dy * scale,
+      );
       final prevGlyph = cursiveGlyphs[word[letterIdx - 1]]!;
       _appendCurvedBridge(
         points.last,
@@ -241,8 +247,7 @@ double _appendWord({
     bool firstBezierOfStroke = true;
     for (var i = 0; i < stroke.beziers.length; i++) {
       final translated = stroke.beziers[i]
-          .map((p) =>
-              Offset((p.dx + deferredCursorX) * scale, p.dy * scale))
+          .map((p) => Offset((p.dx + deferredCursorX) * scale, p.dy * scale))
           .toList();
       final sampled = sampleCubic(translated, _pointsPerCurve);
       if (firstBezierOfStroke) {
@@ -259,7 +264,7 @@ double _appendWord({
 
 /// Bezier bridge from `start` to `end` that leaves `start` along `exitTangent`
 /// and arrives at `end` along `entryTangent` (both unit vectors in world
-/// coords). Adds 19 sampled points (skipping `start`, including `end`).
+/// coords). Adds 29 sampled points (skipping `start`, including `end`).
 void _appendCurvedBridge(
   Offset start,
   Offset end,

@@ -1,5 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:urge_surfer/domain/drawing/glyphs/cursive_glyphs.dart';
 import 'package:urge_surfer/domain/drawing/glyphs/word_composer.dart';
+import 'package:urge_surfer/domain/phrases.dart';
 
 void main() {
   group('composeWord', () {
@@ -52,8 +56,10 @@ void main() {
       expect(composed.letterStartIndices.first, 0);
       // Letter ranges cover the main trace; any deferred strokes (e.g. the
       // 't' crossbar in "gentle") are appended past the last letter's end.
-      expect(composed.letterEndIndices.last,
-          lessThanOrEqualTo(composed.points.length - 1));
+      expect(
+        composed.letterEndIndices.last,
+        lessThanOrEqualTo(composed.points.length - 1),
+      );
     });
 
     test('letterCenterX is monotonically increasing across the word', () {
@@ -79,7 +85,8 @@ void main() {
         expect(
           gap,
           lessThan(maxAllowedGap),
-          reason: 'within-stroke gap of $gap between points ${i - 1} and $i '
+          reason:
+              'within-stroke gap of $gap between points ${i - 1} and $i '
               'exceeds threshold $maxAllowedGap',
         );
       }
@@ -121,8 +128,11 @@ void main() {
       final endOfBe = phrase.points[stroke1 - 1];
       final startOfGentle = phrase.points[stroke1];
       final gap = (startOfGentle - endOfBe).distance;
-      expect(gap, greaterThan(50),
-          reason: 'no bridge between words — there should be a visible gap');
+      expect(
+        gap,
+        greaterThan(50),
+        reason: 'no bridge between words — there should be a visible gap',
+      );
     });
 
     test('within-stroke gaps stay under advance threshold', () {
@@ -154,6 +164,80 @@ void main() {
     test('throws on unsupported character', () {
       // '@' is not a glyph in cursiveGlyphs.
       expect(() => composePhrase('be br@ve'), throwsArgumentError);
+    });
+  });
+
+  group('editable centerline glyph set', () {
+    const basicLatin = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.';
+
+    test('covers every basic Latin letter and period', () {
+      for (final character in basicLatin.split('')) {
+        expect(
+          cursiveGlyphs.containsKey(character),
+          isTrue,
+          reason: 'missing glyph for $character',
+        );
+        expect(() => composeWord(character), returnsNormally);
+      }
+    });
+
+    test('every stroke is non-empty and cubic segments are continuous', () {
+      for (final character in basicLatin.split('')) {
+        final glyph = cursiveGlyphs[character]!;
+        expect(glyph.strokes, isNotEmpty, reason: character);
+        for (final stroke in glyph.strokes) {
+          expect(stroke.beziers, isNotEmpty, reason: character);
+          for (var index = 1; index < stroke.beziers.length; index++) {
+            expect(
+              stroke.beziers[index].first,
+              stroke.beziers[index - 1].last,
+              reason: '$character has a gap before cubic segment $index',
+            );
+          }
+        }
+      }
+    });
+
+    test('full alphabets remain densely sampled across letter joins', () {
+      final composed = composeWord(
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+      );
+      final strokeStarts = composed.strokeStartIndices.toSet();
+      const maxAllowedGap = 8 * defaultGlyphScale;
+      for (var index = 1; index < composed.points.length; index++) {
+        if (strokeStarts.contains(index)) continue;
+        expect(
+          (composed.points[index] - composed.points[index - 1]).distance,
+          lessThan(maxAllowedGap),
+          reason: 'gap before template point $index exceeds trace threshold',
+        );
+      }
+    });
+
+    test('all shipped phrases fit vertically inside the tracing viewport', () {
+      for (final phrase in selfCompassionPhrases) {
+        final composed = composePhrase(phrase);
+        final ys = composed.points.map((point) => point.dy);
+        final height = ys.reduce(math.max) - ys.reduce(math.min);
+        expect(
+          height,
+          lessThanOrEqualTo(280),
+          reason: '$phrase is $height px tall before stroke width',
+        );
+      }
+    });
+
+    test('every individual glyph fits horizontally inside the viewport', () {
+      for (final character in basicLatin.split('')) {
+        final composed = composeWord(character);
+        final xs = composed.points.map((point) => point.dx);
+        final width = xs.reduce(math.max) - xs.reduce(math.min);
+        expect(
+          width,
+          lessThanOrEqualTo(304),
+          reason: '$character is $width px wide before stroke width',
+        );
+      }
     });
   });
 }
