@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""Desktop glyph editor for urge-surfer's cursive lowercase glyphs.
-
-Loads `lib/domain/drawing/glyphs/lowercase_glyphs.dart`, lets you drag bezier
-control points to refine each letter, and writes edits back to the file.
+"""Desktop editor for the cursive letterforms in `src/glyphs.json`.
 
 Run:
     python3 tool/glyph_editor.py
 
-The editor itself uses tkinter from the standard library. The optional
-Sacramento overlay also needs Pillow. On Debian/Ubuntu:
+One letter at a time. To edit how two letters connect, use the separate
+`python3 tool/join_editor.py`.
+
+Needs tkinter from the standard library; the optional Sacramento overlay also
+needs Pillow. On Debian/Ubuntu:
 
     sudo apt install python3-tk python3-pil
 
-Features:
     * Letter picker + drag anchors (red) / handles (blue).
     * Optional Sacramento reference overlay, aligned to the baseline and x-height,
       with adjustable opacity.
     * Click an anchor to see its coords; click a handle to see its angle and
       length relative to its parent anchor.
-    * Linked anchors (P3 of bezier i ≈ P0 of bezier i+1) move together.
+    * Linked anchors (P3 of bezier i is at P0 of bezier i+1) move together.
     * Pan with right-click drag, zoom with the mouse wheel (anchored on cursor).
     * Move-letter toggle: drag on empty canvas to translate ALL of the current
       letter's points.
@@ -28,25 +27,32 @@ Features:
       beziers (or drop the bezier if at a stroke boundary).
     * `Disconnect`: with a shared anchor selected, split the stroke at that
       anchor into two strokes.
+    * `+ Stroke`: append a new stroke. Stroke 1 is the one that joins to its
+      neighbours; every stroke after it is a second pass — a pen lift the user
+      taps to begin, like a t crossbar or an i dot.
+    * `Make main`: promote the selected stroke to stroke 1. Needed when a glyph
+      was drawn with its crossbar first, as capital T was.
     * Snap-on-release: drag an anchor within snap radius of another anchor and
       it snaps to that position. If both are stroke endpoints in different
       strokes, the strokes are merged into one continuous stroke (with one
       automatically reversed if needed).
 
-Edits all three glyph data files (lowercase, uppercase, punctuation). The
-picker lists every glyph; on save each glyph's edits are written back to its
-original source file. File-level header comments round-trip; inline `// ...`
-comments WITHIN a bezier list are dropped on save.
+Save writes the whole file back, one bezier per line so edits stay readable in
+a diff.
 """
-import base64
-import io
 import math
-import re
+import sys
 from pathlib import Path
 
-# tkinter is optional at import time so this module can be loaded on a
-# headless host for testing parse/serialize without a display. main() refuses
-# to launch if it's not present.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tool.glyphdata import (  # noqa: E402
+    ANCHOR_EPS, DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y, DEFAULT_SCALE, GLYPHS_FILE,
+    HIT_R, REFERENCE_LINES, SACRAMENTO_FONT, SNAP_RADIUS, ZOOM_FACTOR,
+    dump_glyphs, load_glyphs, load_sacramento_reference, reverse_bezier_list,
+    sample_cubic, split_cubic,
+)
+
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -58,247 +64,23 @@ except ImportError:
     _HAS_TK = False
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image
     _HAS_PIL = True
 except ImportError:
     Image = None  # type: ignore
-    ImageDraw = None  # type: ignore
-    ImageFont = None  # type: ignore
     _HAS_PIL = False
 
-REPO = Path(__file__).resolve().parent.parent
-GLYPHS_DIR = REPO / "lib" / "domain" / "drawing" / "glyphs"
-SACRAMENTO_FONT = REPO / "vendor" / "sacramento" / "Sacramento-Regular.ttf"
-
-# Sacramento metrics: x-height 627 units in a 2048-unit em. The overlay is
-# normalized onto the editor baseline (y=70) and x-height guide (y=30).
-SACRAMENTO_UNITS_PER_EM = 2048
-SACRAMENTO_X_HEIGHT = 627
-SACRAMENTO_RENDER_SIZE = 1024
-
-# Source files the editor manages. The header (everything from the first line
-# up to and including `const Map<...> XxxGlyphs = {`) is captured from disk
-# at startup and emitted verbatim on save — so file comments and the map name
-# round-trip without being hardcoded in this script.
-#
-# Number format: "fixed2" emits every coord with two decimals (matches the
-# letterpaths-generator output for lowercase); "smart" emits clean integers
-# when the value is whole, two decimals otherwise (matches the hand-authored
-# style used in uppercase / punctuation).
-#
-# Caveat: inline `// ...` comments WITHIN a glyph's bezier list are dropped
-# on save (file-level comments above the map declaration ARE preserved).
-SOURCES = [
-    ("lowercase", GLYPHS_DIR / "lowercase_glyphs.dart", "fixed2"),
-    ("uppercase", GLYPHS_DIR / "uppercase_glyphs.dart", "smart"),
-    ("punctuation", GLYPHS_DIR / "punctuation_glyphs.dart", "smart"),
-]
+import base64
+import io
 
 # Rendering / interaction
-DEFAULT_SCALE = 8.0
-DEFAULT_MARGIN_X = 80
-DEFAULT_MARGIN_Y = 40
 ANCHOR_R = 7
 HANDLE_R = 5
 SELECTED_R_BONUS = 3
-HIT_R = 14
 ADD_HIT_R = 20
-ANCHOR_EPS = 0.5         # glyph-unit proximity for "linked" anchors
-SNAP_RADIUS = 6.0        # glyph-unit snap radius for connect-on-release
-ZOOM_FACTOR = 1.1
-SAMPLES_PER_CURVE = 30
 
-# Modes
 MODE_SELECT = "select"
 MODE_ADD_ANCHOR = "add_anchor"
-
-REFERENCE_LINES = [
-    (0, "ascender"),
-    (30, "x-height"),
-    (70, "baseline"),
-    (100, "descender"),
-]
-
-# --- Parsing / serializing ---
-
-
-def parse_glyphs_file(path):
-    """Read a glyph data file. Returns (header, glyphs).
-
-    `header` is the file's prefix verbatim: everything before the first
-    `'X': CursiveGlyph(` line, including the `const Map<...> XxxGlyphs = {`
-    line. Re-emitted unchanged on save so file-level comments and the map
-    name (lowercaseGlyphs / uppercaseGlyphs / punctuationGlyphs) round-trip.
-
-    `glyphs` is a dict `{key: [advance_width, strokes]}`. `strokes` is a list
-    of `[phase, beziers]`; `beziers` is a list of beziers; each bezier is a
-    list of 4 `[x, y]` (mutable for in-place edit). `phase` is the trailing
-    `// main` / `// deferred` comment on the `CursiveStroke(beziers: [` line
-    (or None if absent); preserved verbatim.
-    """
-    text = path.read_text()
-    lines = text.split("\n")
-    glyph_entry_re = re.compile(r"^  '(.+)':\s*CursiveGlyph\($")
-    header_end = len(lines)
-    for i, line in enumerate(lines):
-        if glyph_entry_re.match(line):
-            header_end = i
-            break
-    header = "\n".join(lines[:header_end])
-
-    glyphs = {}
-    i = header_end
-    while i < len(lines):
-        m = glyph_entry_re.match(lines[i])
-        if not m:
-            i += 1
-            continue
-        key = m.group(1)
-        i += 1
-        m2 = re.match(r"^    advanceWidth:\s*([-\d.]+),", lines[i])
-        adv = float(m2.group(1))
-        i += 1  # 'strokes: ['
-        i += 1
-        strokes = []
-        while not re.match(r"^    \],", lines[i]):
-            sm = re.match(
-                r"^      CursiveStroke\(beziers:\s*\[(.*)$", lines[i]
-            )
-            if sm:
-                tail = sm.group(1).strip()
-                phase_match = re.match(r"//\s*(.*)$", tail)
-                phase = phase_match.group(1).strip() if phase_match else None
-                i += 1
-                beziers = []
-                while not re.match(r"^      \]\),", lines[i]):
-                    nums = re.findall(
-                        r"Offset\(([-\d.]+),\s*([-\d.]+)\)", lines[i]
-                    )
-                    if len(nums) == 4:
-                        beziers.append([[float(x), float(y)] for x, y in nums])
-                    i += 1
-                strokes.append([phase, beziers])
-                i += 1  # past ']),'
-            else:
-                i += 1
-        i += 1  # past '],'
-        i += 1  # past '),'
-        glyphs[key] = [adv, strokes]
-    return header, glyphs
-
-
-def _fmt_num(v, style):
-    """Format a coordinate per the source file's style. `"fixed2"` always
-    emits two decimals (matches the letterpaths generator). `"smart"` emits
-    a clean integer for whole-number values, two decimals otherwise."""
-    if style == "smart" and v == int(v):
-        return str(int(v))
-    return f"{v:.2f}"
-
-
-def serialize_glyphs_file(header, glyphs, num_format="fixed2"):
-    """Render a glyph data file: file header + glyph entries + closing brace."""
-    out = [header]
-    for key in sorted(glyphs):
-        adv, strokes = glyphs[key]
-        out.append(f"  '{key}': CursiveGlyph(")
-        out.append(f"    advanceWidth: {_fmt_num(adv, num_format)},")
-        out.append("    strokes: [")
-        for phase, beziers in strokes:
-            phase_tag = f"  // {phase}" if phase else ""
-            out.append(f"      CursiveStroke(beziers: [{phase_tag}")
-            for bez in beziers:
-                pts = ", ".join(
-                    f"Offset({_fmt_num(p[0], num_format)}, "
-                    f"{_fmt_num(p[1], num_format)})"
-                    for p in bez
-                )
-                out.append(f"        [{pts}],")
-            out.append("      ]),")
-        out.append("    ],")
-        out.append("  ),")
-    out.append("};")
-    out.append("")
-    return "\n".join(out)
-
-
-# --- Bezier helpers ---
-
-
-def cubic_at(t, p0, p1, p2, p3):
-    u = 1 - t
-    return (
-        u * u * u * p0[0] + 3 * u * u * t * p1[0]
-        + 3 * u * t * t * p2[0] + t * t * t * p3[0],
-        u * u * u * p0[1] + 3 * u * u * t * p1[1]
-        + 3 * u * t * t * p2[1] + t * t * t * p3[1],
-    )
-
-
-def sample_cubic(p0, p1, p2, p3, n=SAMPLES_PER_CURVE):
-    return [cubic_at(i / (n - 1), p0, p1, p2, p3) for i in range(n)]
-
-
-def split_cubic(bez, t):
-    """De Casteljau split. Returns (left, right) — two new beziers whose
-    union exactly reproduces the original curve. Each returned bezier is a
-    list of four fresh `[x, y]` mutable lists."""
-    P0, P1, P2, P3 = bez
-
-    def lerp(a, b, u):
-        return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]
-
-    Q0 = lerp(P0, P1, t)
-    Q1 = lerp(P1, P2, t)
-    Q2 = lerp(P2, P3, t)
-    R0 = lerp(Q0, Q1, t)
-    R1 = lerp(Q1, Q2, t)
-    S = lerp(R0, R1, t)
-    return (
-        [[P0[0], P0[1]], Q0, R0, S],
-        [[S[0], S[1]], R1, Q2, [P3[0], P3[1]]],
-    )
-
-
-def reverse_bezier_list(beziers):
-    """Reverse a sequence of beziers so the curve runs backwards. Returns a
-    new list with each bezier's points reversed and list order reversed."""
-    return [
-        [list(b[3]), list(b[2]), list(b[1]), list(b[0])]
-        for b in reversed(beziers)
-    ]
-
-
-def load_sacramento_reference(character):
-    # Return a grayscale mask and bounds in editor coordinates. Keeping this
-    # transform separate from Tk makes alignment testable on headless hosts.
-    if not _HAS_PIL:
-        raise RuntimeError("Pillow is required for the Sacramento overlay")
-    if not SACRAMENTO_FONT.exists():
-        raise FileNotFoundError(SACRAMENTO_FONT)
-
-    font = ImageFont.truetype(str(SACRAMENTO_FONT), SACRAMENTO_RENDER_SIZE)
-    left, top, right, bottom = font.getbbox(character, anchor="ls")
-    width = max(1, right - left)
-    height = max(1, bottom - top)
-    mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.text((-left, -top), character, font=font, fill=255, anchor="ls")
-
-    font_units_per_pixel = SACRAMENTO_UNITS_PER_EM / SACRAMENTO_RENDER_SIZE
-    glyph_units_per_pixel = 40.0 / (
-        SACRAMENTO_X_HEIGHT / font_units_per_pixel
-    )
-    bounds = (
-        left * glyph_units_per_pixel,
-        70.0 + top * glyph_units_per_pixel,
-        right * glyph_units_per_pixel,
-        70.0 + bottom * glyph_units_per_pixel,
-    )
-    return mask, bounds
-
-
-# --- Editor ---
 
 
 def _sort_keys_for_picker(keys):
@@ -317,26 +99,11 @@ class GlyphEditor:
     def __init__(self, master):
         self.master = master
         master.title("Cursive glyph editor")
-        master.geometry("1100x800")
+        master.geometry("1320x800")
 
-        # Load all three source files. Each glyph keeps a record of which
-        # file (and format style) it came from so save writes to the right
-        # place with the right number format.
-        self.sources_data = {}
-        self.glyphs_on_disk = {}
-        self.glyphs_working = {}
-        self.key_source = {}
-        for name, path, fmt in SOURCES:
-            header, glyphs = parse_glyphs_file(path)
-            self.sources_data[name] = {
-                "path": path,
-                "header": header,
-                "format": fmt,
-            }
-            for key, glyph in glyphs.items():
-                self.glyphs_on_disk[key] = self._deep_copy_glyph(glyph)
-                self.glyphs_working[key] = self._deep_copy_glyph(glyph)
-                self.key_source[key] = name
+        glyphs = load_glyphs()
+        self.glyphs_on_disk = self._deep_copy(glyphs)
+        self.glyphs_working = self._deep_copy(glyphs)
 
         self.keys = _sort_keys_for_picker(self.glyphs_working.keys())
         self.current_key = self.keys[0]
@@ -361,13 +128,7 @@ class GlyphEditor:
     @staticmethod
     def _deep_copy_glyph(glyph):
         adv, strokes = glyph
-        return [
-            adv,
-            [
-                [phase, [[p[:] for p in bez] for bez in beziers]]
-                for phase, beziers in strokes
-            ],
-        ]
+        return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes]]
 
     @classmethod
     def _deep_copy(cls, glyphs):
@@ -384,7 +145,7 @@ class GlyphEditor:
         )
         self.picker.set(self.current_key)
         self.picker.bind("<<ComboboxSelected>>", self._on_pick)
-        self.picker.pack(side="left", padx=(4, 16))
+        self.picker.pack(side="left", padx=(4, 12))
 
         tk.Button(
             toolbar, text="+ Add", command=self._enter_add_mode
@@ -394,6 +155,12 @@ class GlyphEditor:
         ).pack(side="left", padx=2)
         tk.Button(
             toolbar, text="Disconnect", command=self._disconnect_selected
+        ).pack(side="left", padx=2)
+        tk.Button(
+            toolbar, text="+ Stroke", command=self._add_stroke
+        ).pack(side="left", padx=(12, 2))
+        tk.Button(
+            toolbar, text="Make main", command=self._make_main_stroke
         ).pack(side="left", padx=2)
 
         self.translate_var = tk.BooleanVar(value=False)
@@ -457,6 +224,36 @@ class GlyphEditor:
         self._redraw()
         self._update_status()
 
+    def _add_stroke(self):
+        """Append a new stroke. Anything after the first is a second pass —
+        the user lifts the pen and taps to start it, like a t crossbar."""
+        strokes = self.glyphs_working[self.current_key][1]
+        strokes.append([[[0.0, 30.0], [8.0, 30.0], [16.0, 30.0], [24.0, 30.0]]])
+        self.selected = (len(strokes) - 1, 0, 0)
+        self._redraw()
+        self._status(
+            f"Added stroke {len(strokes)} as a second pass. Drag it into place; "
+            f"use Make main if it should be the joinable stroke instead."
+        )
+
+    def _make_main_stroke(self):
+        """Move the selected stroke to the front. Stroke 1 is the one that
+        joins to its neighbours; every other stroke is a second pass."""
+        if self.selected is None:
+            self._status("Select a point on the stroke you want as the main one.")
+            return
+        s, b, p = self.selected
+        strokes = self.glyphs_working[self.current_key][1]
+        if s == 0:
+            self._status("That is already the main stroke.")
+            return
+        strokes.insert(0, strokes.pop(s))
+        self.selected = (0, b, p)
+        self._redraw()
+        self._status(f"Stroke {s + 1} is now the main stroke.")
+
+    # --- Tuning the join between two letters ---
+
     def _reset_current(self):
         self.glyphs_working[self.current_key] = self._deep_copy_glyph(
             self.glyphs_on_disk[self.current_key]
@@ -473,19 +270,11 @@ class GlyphEditor:
 
     def _save(self):
         try:
-            written = []
-            for name, data in self.sources_data.items():
-                source_glyphs = {
-                    k: v for k, v in self.glyphs_working.items()
-                    if self.key_source[k] == name
-                }
-                content = serialize_glyphs_file(
-                    data["header"], source_glyphs, data["format"]
-                )
-                data["path"].write_text(content)
-                written.append(data["path"].name)
+            GLYPHS_FILE.write_text(dump_glyphs(self.glyphs_working))
             self.glyphs_on_disk = self._deep_copy(self.glyphs_working)
-            self._status(f"Saved {len(written)} files: {', '.join(written)}.")
+            self._status(
+                f"Saved {len(self.glyphs_working)} glyphs to {GLYPHS_FILE.name}."
+            )
         except Exception as e:
             messagebox.showerror("Save failed", str(e))
 
@@ -524,13 +313,15 @@ class GlyphEditor:
             )
             return
         s, b, p = self.selected
-        beziers = self.glyphs_working[self.current_key][1][s][1]
+        all_strokes = self.glyphs_working[self.current_key][1]
+        beziers = all_strokes[s]
         pt = beziers[b][p]
         pname = ["P0", "P1", "P2", "P3"][p]
+        pass_note = "main" if s == 0 else "2nd pass"
         if p in (0, 3):
             self._status(
-                f"{pname}  bezier {b + 1}, stroke {s + 1}    "
-                f"({pt[0]:.2f}, {pt[1]:.2f})"
+                f"{pname}  bezier {b + 1}, stroke {s + 1}/{len(all_strokes)} "
+                f"({pass_note})    ({pt[0]:.2f}, {pt[1]:.2f})"
             )
         else:
             parent = beziers[b][0 if p == 1 else 3]
@@ -539,8 +330,8 @@ class GlyphEditor:
             angle = math.degrees(math.atan2(-dy, dx))
             length = math.hypot(dx, dy)
             self._status(
-                f"{pname}  bezier {b + 1}, stroke {s + 1}    "
-                f"angle {angle:+.1f}°, length {length:.2f}"
+                f"{pname}  bezier {b + 1}, stroke {s + 1}/{len(all_strokes)} "
+                f"({pass_note})    angle {angle:+.1f}°, length {length:.2f}"
             )
 
     # --- Coord transforms ---
@@ -564,7 +355,7 @@ class GlyphEditor:
         strokes = self.glyphs_working[self.current_key][1]
         best = None
         best_dist = HIT_R
-        for s_idx, (_, beziers) in enumerate(strokes):
+        for s_idx, beziers in enumerate(strokes):
             for b_idx, bez in enumerate(beziers):
                 for p_idx, (px, py) in enumerate(bez):
                     cx, cy = self._to_canvas(px, py)
@@ -577,7 +368,7 @@ class GlyphEditor:
     def _linked_anchors(self, s, b, p):
         if p not in (0, 3):
             return [(s, b, p)]
-        beziers = self.glyphs_working[self.current_key][1][s][1]
+        beziers = self.glyphs_working[self.current_key][1][s]
         ref = beziers[b][p]
         out = [(s, b, p)]
         for b2, bez in enumerate(beziers):
@@ -593,7 +384,7 @@ class GlyphEditor:
 
     def _bezier_polyline_points(self):
         strokes = self.glyphs_working[self.current_key][1]
-        for s_idx, (_, beziers) in enumerate(strokes):
+        for s_idx, beziers in enumerate(strokes):
             for b_idx, bez in enumerate(beziers):
                 for i in range(SAMPLES_PER_CURVE):
                     t = i / (SAMPLES_PER_CURVE - 1)
@@ -637,7 +428,7 @@ class GlyphEditor:
             gx, gy = self._to_glyph(event.x, event.y)
             strokes = self.glyphs_working[self.current_key][1]
             for s, b, p in ds["targets"]:
-                strokes[s][1][b][p] = [gx, gy]
+                strokes[s][b][p] = [gx, gy]
             self._update_status()
             self._redraw()
         elif ds["type"] == "translate":
@@ -647,7 +438,7 @@ class GlyphEditor:
             dx = gx1 - gx0
             dy = gy1 - gy0
             strokes = self.glyphs_working[self.current_key][1]
-            for _, beziers in strokes:
+            for beziers in strokes:
                 for bez in beziers:
                     for pt in bez:
                         pt[0] += dx
@@ -711,7 +502,7 @@ class GlyphEditor:
             self._status("Click closer to a curve to add an anchor.")
             return
         s, b, t, _ = best
-        beziers = self.glyphs_working[self.current_key][1][s][1]
+        beziers = self.glyphs_working[self.current_key][1][s]
         left, right = split_cubic(beziers[b], t)
         beziers[b:b + 1] = [left, right]
         self.selected = (s, b, 3)  # the new shared anchor
@@ -728,7 +519,7 @@ class GlyphEditor:
             self._status("Select an anchor (red), not a handle.")
             return
         strokes = self.glyphs_working[self.current_key][1]
-        beziers = strokes[s][1]
+        beziers = strokes[s]
         if p == 0 and b == 0:
             beziers.pop(0)
         elif p == 3 and b == len(beziers) - 1:
@@ -758,7 +549,7 @@ class GlyphEditor:
             self._status("Select an anchor (red), not a handle.")
             return
         strokes = self.glyphs_working[self.current_key][1]
-        phase, beziers = strokes[s]
+        beziers = strokes[s]
         if p == 3 and b < len(beziers) - 1:
             split_after = b
         elif p == 0 and b > 0:
@@ -768,8 +559,8 @@ class GlyphEditor:
             return
         left = beziers[:split_after + 1]
         right = beziers[split_after + 1:]
-        strokes[s] = [phase, left]
-        strokes.insert(s + 1, [phase, right])
+        strokes[s] = left
+        strokes.insert(s + 1, right)
         self.selected = None
         self._redraw()
         self._status("Split stroke into two.")
@@ -783,10 +574,10 @@ class GlyphEditor:
         if p not in (0, 3):
             return
         strokes = self.glyphs_working[self.current_key][1]
-        pt = strokes[s][1][b][p]
+        pt = strokes[s][b][p]
         dragged_set = set(dragged_targets)
         snap = None  # (s', b', p', dist)
-        for s2, (_, beziers2) in enumerate(strokes):
+        for s2, beziers2 in enumerate(strokes):
             for b2, bez2 in enumerate(beziers2):
                 for p2 in (0, 3):
                     if (s2, b2, p2) in dragged_set:
@@ -798,16 +589,16 @@ class GlyphEditor:
         if snap is None:
             return
         s2, b2, p2, _ = snap
-        other = strokes[s2][1][b2][p2]
+        other = strokes[s2][b2][p2]
         for ts, tb, tp in dragged_targets:
-            strokes[ts][1][tb][tp] = [other[0], other[1]]
+            strokes[ts][tb][tp] = [other[0], other[1]]
         if s == s2:
             self.selected = (s2, b2, p2)
             self._status("Snapped to nearby anchor (same stroke).")
             return
         # Different strokes — merge if both ends are stroke endpoints
-        bez_a = strokes[s][1]
-        bez_b = strokes[s2][1]
+        bez_a = strokes[s]
+        bez_b = strokes[s2]
         a_is_end = (p == 3 and b == len(bez_a) - 1)
         a_is_start = (p == 0 and b == 0)
         b_is_start = (p2 == 0 and b2 == 0)
@@ -820,12 +611,11 @@ class GlyphEditor:
             bez_a = reverse_bezier_list(bez_a)
         if b_is_end:
             bez_b = reverse_bezier_list(bez_b)
-        merged_phase = strokes[s][0] or strokes[s2][0]
         merged_beziers = bez_a + bez_b
         # Replace the lower-indexed stroke with the merge, remove the other.
         lo, hi = sorted([s, s2])
         new_strokes = list(strokes)
-        new_strokes[lo] = [merged_phase, merged_beziers]
+        new_strokes[lo] = merged_beziers
         new_strokes.pop(hi)
         self.glyphs_working[self.current_key][1] = new_strokes
         self.selected = None
@@ -868,6 +658,19 @@ class GlyphEditor:
             x, y, anchor="nw", image=self._overlay_photo, tags="overlay"
         )
 
+    def _polyline(self, points, **options):
+        if len(points) < 2:
+            return
+        flat = [c for pt in points for c in self._to_canvas(pt[0], pt[1])]
+        self.canvas.create_line(*flat, capstyle="round", joinstyle="round", **options)
+
+    def _stroke_points(self, beziers, offset=0.0):
+        points = []
+        for bez in beziers:
+            samples = sample_cubic(*bez)
+            points.extend(samples if not points else samples[1:])
+        return [(x + offset, y) for x, y in points]
+
     def _redraw(self):
         self.canvas.delete("all")
         adv, strokes = self.glyphs_working[self.current_key]
@@ -887,33 +690,25 @@ class GlyphEditor:
             cx, _ = self._to_canvas(gx, 0)
             self.canvas.create_line(cx, 0, cx, h, fill="#e0e0e0")
 
-        for s_idx, (_, beziers) in enumerate(strokes):
-            polyline = []
-            if beziers:
-                first_p0 = beziers[0][0]
-                polyline.append(self._to_canvas(first_p0[0], first_p0[1]))
-                for bez in beziers:
-                    samples = sample_cubic(*bez)
-                    for pt in samples[1:]:
-                        polyline.append(self._to_canvas(pt[0], pt[1]))
-            if len(polyline) >= 2:
-                flat = [c for pt in polyline for c in pt]
-                self.canvas.create_line(
-                    *flat, fill="#5e35b1", width=3,
-                    capstyle="round", joinstyle="round",
-                )
+        for s_idx, beziers in enumerate(strokes):
+            self._polyline(
+                self._stroke_points(beziers),
+                fill="#5e35b1" if s_idx == 0 else "#c2185b", width=3,
+            )
             if beziers:
                 cx, cy = self._to_canvas(*beziers[0][0])
                 self.canvas.create_oval(
                     cx - 5, cy - 5, cx + 5, cy + 5,
-                    fill="#7e57c2", outline="",
+                    fill="#7e57c2" if s_idx == 0 else "#c2185b", outline="",
                 )
                 self.canvas.create_text(
-                    cx + 10, cy - 8, text=f"{s_idx + 1}",
-                    fill="#5e35b1", font=("TkDefaultFont", 10),
+                    cx + 10, cy - 8,
+                    text=f"{s_idx + 1}" if s_idx == 0 else f"{s_idx + 1} (2nd pass)",
+                    fill="#5e35b1" if s_idx == 0 else "#c2185b",
+                    font=("TkDefaultFont", 10),
                 )
 
-        for s_idx, (_, beziers) in enumerate(strokes):
+        for s_idx, beziers in enumerate(strokes):
             for b_idx, bez in enumerate(beziers):
                 p0 = self._to_canvas(*bez[0])
                 p1 = self._to_canvas(*bez[1])
