@@ -1,347 +1,210 @@
 # Urge Surfer — Technical Notes
 
-Living technical doc. Each commit that changes infrastructure, dependencies, or structural decisions should update this file in the same commit.
+Living technical doc. Each commit that changes structure or dependencies should update this file in the same commit.
 
-The product/design source of truth is `~/.claude/plans/the-goal-of-this-snappy-dolphin.md` (referenced via the restated plan at `~/.claude/plans/restate-the-plan-and-mellow-firefly.md`). This doc covers the **how**, not the **what**.
+The product/design source of truth is `~/.claude/plans/the-goal-of-this-snappy-dolphin.md`. This doc covers the **how**, not the **what**.
 
 ---
 
 ## Project layout
 
-Standard Flutter app, scaffolded with `flutter create --platforms ios,android`. iOS + Android only — no web, desktop, or macOS.
+A static web app. No build step, no bundler, no runtime dependencies.
 
-- `lib/` — Dart source.
-- `android/`, `ios/` — platform-specific scaffolds.
-- `assets/phrases/` — JSON phrase library (`general.json`, `betting.json`, `scrolling.json` seeded; `alcohol.json`, `smoking.json` to come).
-- `test/` — unit + widget tests. `integration_test/` to be added.
-- `pubspec.yaml` — dependency manifest.
+```
+index.html            every screen's markup, toggled with `hidden`
+styles.css            one fluid layout, light and dark
+src/
+  main.js             screens, hash routing, localStorage
+  canvas.js           the tracing surface: frame loop, pointers, camera, painting
+  tracer.js           the pen simulation
+  composer.js         phrase -> traceable polyline
+  glyphs.json         cursive centerline data
+  join.json           global join tuning — shared with the join editor
+  pairs.json          hand-tuned joins for specific letter pairs
+  phrases.js          the phrase list
+test/                 node:test suites for composer.js and tracer.js
+tool/glyphdata.py     glyph loading/saving + the join maths, shared, no UI
+tool/glyph_editor.py  desktop editor for the letterforms
+tool/join_editor.py   desktop editor for how pairs of letters connect
+vendor/               letterpaths dataset (provenance) + Sacramento font (glyph editor overlay)
+assets/phrases/       JSON phrase library — reviewed content, not yet wired into the app
+```
 
-## Identifiers
+`package.json` exists only to mark `src/` and `test/` as ES modules so `node --test` can run them. There are no dependencies and nothing to install.
 
-- Dart package name: `urge_surfer` (snake_case; pub requirement).
-- Bundle org: `com.urgesurfer`. Resulting iOS bundle ID and Android package: `com.urgesurfer.urge_surfer`.
+Was previously a Flutter phone app (Riverpod, drift/SQLCipher, go_router). The drawing model and the glyph data carried over; everything else was replaced by the platform's own equivalents — DOM instead of widgets, `localStorage` instead of an encrypted database, hash routing instead of go_router.
 
-## Flutter / Dart versions
+## Running and testing
 
-- Flutter `3.41.9` stable (Linux snap install).
-- Dart SDK constraint: `^3.11.5` (per generated pubspec).
+```sh
+python3 -m http.server 8000     # then open http://localhost:8000
+node --test test/               # needs Node 20+ for JSON import attributes
+python3 -m unittest tool.test_glyphdata
+bash tool/check_no_network.sh
+```
 
-## Runtime dependencies
+A server is required: browsers refuse ES modules over `file://`, and the JSON data files are loaded with import attributes, which need an `application/json` content type.
 
-| Package | Why |
+## Browser requirements
+
+Chrome 123+, Safari 17.2+, Firefox 132+, or newer. The floor is set by JSON import attributes (`import … with { type: 'json' }`). Also assumed: ES modules, `ResizeObserver`, Pointer Events, `dvh` units, `:has`-free CSS.
+
+## The drawing model
+
+Three pure-ish layers, each testable on its own.
+
+### `composer.js` — phrase to polyline
+
+Glyphs are authored in unit coordinates: `x ∈ [0, advanceWidth]` left to right, `y ∈ [0, 100]` top to bottom, baseline at `y = 70`, x-height top at `y = 30`, ascender top at `y = 10`, descender bottom at `y = 95`.
+
+`composePhrase(phrase)` returns a `ComposedPath`:
+
+- `points` — one dense polyline in scaled world coords.
+- `strokeStart` — index where each stroke begins. The points list **jumps** in absolute coords at these indices; renderers must `moveTo`, not `lineTo`.
+- `letterStart` / `letterEnd` — inclusive point range per letter.
+- `letterCenterX` — world-space horizontal centre of each letter, midway between its first and last point. Used only to aim the camera.
+
+Composition is two passes per word, matching how cursive is actually written. Pass one walks the letters, sampling each glyph's `strokes[0]` and joining consecutive letters — this is the word body, one continuous stroke. Pass two emits every `strokes[1..]` (i/j dots, t and T crossbars) as separate strokes afterwards, so the user goes back to dot and cross. Each word is its own stroke; there are no bridging samples between words.
+
+Constants: `GLYPH_SCALE = 2.2`, `SPACE_WIDTH = 30` (unit coords). How letters connect is tunable and lives in `src/join.json`.
+
+#### Joining letters
+
+Every glyph in the dataset **enters at the baseline** (`y ≈ 70`, heading up at roughly -75°) and **exits at mid height** (`y ≈ 51`, heading up-right at roughly -63°). Drawing both as-is means each letter's lead-out and the next letter's lead-in are *the same connecting stroke drawn twice*: the pen climbs to mid height, about-faces 135–214° to dive back to the baseline, then about-faces again to climb out. Two cusps and a retrace at every join.
+
+The fix is to drop the duplicate. For every letter after the first in a word:
+
+1. **Trim the lead-in.** Discard leading points until the path first rises to the height the *previous letter actually exited at*, clamped to the band between the x-height and the baseline. That is 3–29% of a lowercase glyph (median 9%) — the rise from the baseline and nothing else. What remains starts at the height the previous letter left off, already travelling up and to the right. The clamp exists for the capitals, whose exits run from `y = 5` to `y = 72`; without it, a letter following a capital that exits up near the ascender would have its whole opening stroke trimmed away.
+2. **Place by the exit, not by `advanceWidth`.** The letter is offset so its trimmed start sits `join.gap` to the right of the previous letter's last point. The connecting stroke sets the spacing, the way it does by hand, and letters can no longer collide — several glyphs' exits (`m` reaches `x = 88` against an advance of 53) used to overshoot well into the next letter's slot.
+3. **Bridge with one cubic**, leaving along the previous letter's final direction and arriving along the trimmed letter's opening direction, both measured from the sampled points rather than the bezier control points so the trim is accounted for.
+
+Measured across `gentle`, `many`, `ease`, `whole`, `breath`, `again`, `safe`: joins step ≤ 2 units vertically (was 17–19), turn 53–79° (was 135–214°), and backtrack at most 0.6 units — only after `s`, the one glyph whose exit leans down-left. The 180° reversals that remain in a phrase are inside letterforms: `a`, `i`, `o` and `q` reverse at the top of their bowls when composed entirely alone.
+
+Trimming is skipped when a glyph already starts at or above the handover height, which covers most capitals and the period, and for the first letter of every word — you do start a word from the baseline.
+
+`src/join.json` holds the one tunable, `gap`. Both `composer.js` and `tool/glyphdata.py` read it, so the join editor's preview and the app agree by construction.
+
+#### Hand-tuned pairs
+
+`src/pairs.json` overrides the automatic join for named letter pairs. A pair stores **the connection, not the letterforms**:
+
+| field | meaning |
 |---|---|
-| `flutter_riverpod` | State management. Type-safe, testable, fits the nested ritual flow. |
-| `drift` | Type-safe SQLite ORM. |
-| `sqlite3` | SQLite bindings; v3.x bundles native libraries automatically via Dart build hooks. The `hooks.user_defines.sqlite3.source: sqlite3mc` block in `pubspec.yaml` switches the bundled binary to SQLite3MultipleCiphers, the maintained encryption-capable successor to SQLCipher. |
-| `flutter_secure_storage` | Stores the DB encryption key in Android Keystore / iOS Keychain. |
-| `go_router` | Declarative routing. |
-| `path_provider` | Locates a writable directory for the DB file. |
-| `path` | Cross-platform path joining (`p.join(...)`) when constructing the DB file path. |
+| `from` | where the first letter's tail is cut, 0–1 along its main stroke |
+| `to` | where the second letter's head is cut, 0–1 along its main stroke |
+| `dx` | the second letter's cut point relative to the first's, horizontally, in glyph units |
+| `h1`, `h2` | the connecting bezier's control handles, as offsets from the cut they belong to |
 
-## Dev dependencies
+Vertical placement is not stored — both letters stay on the baseline, so the heights follow from where the cuts land.
 
-- `drift_dev` — Drift schema codegen.
-- `build_runner` — runs Drift codegen.
-- `flutter_lints` — lint defaults (from `flutter create`).
-- `flutter_test` — unit + widget testing harness.
+**Pairs compose into words.** `ca` plus `ap` gives `cap`, exactly, with no blending. Two facts make that true:
 
-## Asset registration
+1. A join depends only on the two letters in it. Everything before merely translates what follows, so the `a→p` join is bit-identical in `ap`, `cap` and `scrap`. `test/composer.test.js` asserts this.
+2. The two joins around a letter touch opposite ends of it. In `cap`, `c→a` cuts `a`'s head and `a→p` cuts `a`'s tail; they never write the same field. This is why the per-pair data must stay connection-only — there is one `a` glyph with one path, so per-pair *letterforms* would overwrite each other.
 
-`pubspec.yaml`'s `flutter.assets` registers `assets/phrases/` so phrase JSONs ship in the bundle. Glyph templates (`assets/glyphs/`) are not registered yet — add when that asset arrives.
+The failure mode is a letter consumed from both sides: if `from` on one join falls before `to` on the other, nothing survives. `composer.js` clamps so at least one segment remains, and the test suite checks every stored pair against `xy`, `xyy` and `xxy` to catch it.
 
-## Network lockdown
+Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1352 combinations before the file does anything.
 
-The "no-network" claim is the trust core of the project. Three independent layers enforce it; an auditor can verify each in order.
+**`advanceWidth` is no longer used for layout.** It survives in `glyphs.json` and as a guide in the glyph editor, but changing it will not move anything on screen.
 
-### Layer 1 — Android: no `INTERNET` permission in release
+#### Sampling
 
-- `android/app/src/main/AndroidManifest.xml` does **not** declare `android.permission.INTERNET`. Release builds use only this manifest, so the release APK has no networking permission and the OS will reject every outbound request from app code.
-- `android/app/src/debug/AndroidManifest.xml` and `.../profile/AndroidManifest.xml` **do** declare `INTERNET`. This is intentional and required: Flutter's hot reload, the Dart VM Service, and DevTools all communicate with the running app over a local socket. Removing `INTERNET` from those variants would break `flutter run`. Android's manifest merger applies them only for debug and profile builds — never release.
-- Verify: `grep -R "uses-permission" android/app/src/main/AndroidManifest.xml` returns nothing.
+Points are spaced evenly **along the curve**, `POINT_SPACING = 2` world units apart. Each cubic is first sampled at 400 even steps of `t`, then respaced by arc length.
 
-### Layer 2 — iOS: App Transport Security denies all loads
+Sampling at even steps of `t` — what the Flutter version did — is not good enough. A cubic with distant control points (the `t` glyph's second bezier, for one) accelerates hard near one end, leaving gaps of 25 world units between consecutive samples. The tracer only credits progress for points it passes within `8 * GLYPH_SCALE = 17.6` units of, so a gap that big strands the pen. `test/composer.test.js` asserts the spacing invariant across every shipped phrase and both alphabets.
 
-- `ios/Runner/Info.plist` sets `NSAppTransportSecurity` with every flag false: `NSAllowsArbitraryLoads`, `NSAllowsArbitraryLoadsInWebContent`, `NSAllowsArbitraryLoadsForMedia`, `NSAllowsLocalNetworking`. iOS's URL Loading System (NSURLSession and friends) will refuse all requests at the OS layer.
-- ATS does **not** govern raw BSD sockets. Layer 3 (the static check) is what closes that gap by forbidding `dart:io` socket APIs in `lib/`.
+### `tracer.js` — the pen
 
-### Layer 3 — Static check: no network imports or `dart:io` socket symbols in `lib/`
+The pen chases the finger at a constant `PEN_SPEED = 100` px/s. Moving the finger faster just leaves the pen trailing; that lag is the mechanic. `penSpeed = Infinity` turns it off (the "pen lag" toggle).
 
-- `tool/check_no_network.sh` greps `lib/` for forbidden imports (`package:http`, `package:dio`, `package:web_socket_channel`, `package:grpc`, `package:graphql`) and forbidden `dart:io` symbols (`HttpClient`, `Socket`, `RawSocket`, `ServerSocket`, `RawDatagramSocket`, `WebSocket`). It also checks `pubspec.yaml` for any of those packages as direct dependencies.
-- Generated files (`*.g.dart`, `*.drift.dart`, `*.freezed.dart`) are excluded from the scan.
-- `test/` and `integration_test/` are intentionally **not** scanned, so future runtime tests can attempt a request and assert failure.
-- Run locally: `bash tool/check_no_network.sh`. Runs in CI on every push to `main` and every pull request via `.github/workflows/ci.yml`.
+Progress (`index`) advances only while the pen passes within `8 * GLYPH_SCALE` of the *next* point, one point at a time, and never decreases. Straying off the path, or racing ahead and stopping, leaves progress where the pen last actually passed — you have to go back. Progress cannot cross a stroke boundary; `advanceStroke()` teleports the pen to the next stroke's first point, and the canvas gates that on where the user touched.
 
-### Layer 4 — deferred: runtime test that an outbound request fails
+Pen-up (the default, and after every pointer release) freezes everything: `setFinger` is ignored and `tick` is a no-op.
 
-The original plan calls for a deliberate `HttpClient` request to `example.com` that fails at runtime on both platforms. We have **not** implemented this yet, for two reasons:
+`tick(dt)` takes seconds, so 60Hz and 120Hz displays reach the same place after the same wall-clock time.
 
-1. The static check forbids `dart:io` socket usage in `lib/`, so the test must live in `integration_test/` — which is not yet scaffolded.
-2. By default, `flutter test` for integration runs in **debug** mode on Android, where the manifest *does* grant `INTERNET`. The test would pass on iOS (ATS blocks) but pass-when-it-shouldn't on Android. Honest verification needs a profile-build run on Android, paired with the iOS test.
+### `canvas.js` — the surface
 
-When integration_test infrastructure lands, this layer should be added.
+Owns the `requestAnimationFrame` loop, pointer events, the camera, and all painting.
 
-### Forbidden, full list
+- **Camera.** Horizontal only; the phrase is centred vertically once per resize. `panX` tweens toward its target through a low-pass filter (`τ = 0.25 s`). The target is the leading edge of progress, so the canvas moves only while the user is advancing — except when the current stroke is complete and another remains, when it hops to the next stroke's first letter so the user can see where to tap.
+- **Pointers.** Raw `pointerdown/move/up`, so a tap without a drag registers. On pointer-down, if the current stroke is complete, the touch must land within `NEXT_STROKE_GATE = 100` world units of `nextStrokePoint` or it is ignored entirely.
+- **Chevrons.** Each stroke is split into segments at its sharp corners (local turn angle ≥ 90° over a ±5-point window). One chevron marks the active segment, pointing along the local tangent; it pops to double size and full opacity on becoming active, then eases down over 0.6 s.
+- **Painting.** Ink colour comes from the canvas element's CSS `color`, so the light/dark theme drives it with no JS involvement. Opacity is `globalAlpha`: 0.25 for the template, 0.7 for the traced part.
+- **Sizing.** The canvas is sized by CSS; a `ResizeObserver` sets the backing store to `clientWidth × devicePixelRatio` and re-centres vertically. Wide screens simply show more of the phrase — the glyph scale does not change.
 
-- Direct deps in `pubspec.yaml`: `http`, `dio`, `web_socket_channel`, `grpc`, `graphql`.
-- Imports anywhere in `lib/`: any of the above plus `package:graphql_*` variants.
-- `dart:io` symbols anywhere in `lib/`: `HttpClient`, `Socket`, `RawSocket`, `ServerSocket`, `RawDatagramSocket`, `WebSocket`. (Other `dart:io` APIs — `File`, `Directory`, `Platform` — are fine.)
+## Screens and storage
 
-If a future feature genuinely requires one of these (e.g., serving an in-app local web view), the right move is to discuss the threat model in a PR description, not to silently relax `tool/check_no_network.sh`.
+`main.js` holds three screens, all present in `index.html` and toggled with `hidden`:
 
-## Database & encryption
+- `#/` — the ledger: wave count, "Start a wave", "Just write".
+- `#/ritual` — four steps: name the urge, rate it 0–10, trace a random phrase, rate it again, then log.
+- `#/write` — pick any phrase and trace it; nothing is recorded.
 
-The persistence layer lives under `lib/data/db/` and `lib/data/secure/`.
+Routing is `location.hash` plus a `hashchange` listener, so the browser back button works on phones. The ritual's four steps are internal state, not routes.
 
-### Schema (v1)
+The tracing panel is a `<template>` cloned into whichever screen needs it, so the ritual and "just write" share one implementation. Only one is ever mounted; `unmountTracer()` cancels the frame loop and disconnects the observer.
 
-Four tables, single schema version. All defined in `lib/data/db/tables.dart`.
+Waves are appended to `localStorage["urge-surfer.waves"]` as `{urge, before, after, phrase, at}`. No schema versioning yet — if the shape changes, old entries need handling at read time.
 
-- **`Modules`** — one row per urge the user wants to surf. Columns: `id`, `name`, `moneyTracked` (bool), `defaultAmount` (nullable int), `phraseSet`, `goalCount` (nullable int), `goalAmount` (nullable int), `createdAt`, `archivedAt` (nullable). Goals are modeled as two nullable columns rather than a separate `Goal` table — single goal per module v1, mutually exclusive at the UX layer. If goal history or multi-goal lands, migrate to a separate table at that point.
-- **`Waves`** — one row per surfed wave. Columns: `id`, `moduleId` (FK), `urgeText`, `urgeBefore` (int 0–10), `urgeAfter` (int 0–10), `amount` (nullable int — minor units), `createdAt`. Waves never delete and never reset.
-- **`Intentions`** — the user-written if-then plan per module. Columns: `id`, `moduleId` (FK), `body`, `createdAt`. (`body` rather than `text` because `text` collides with Drift's `Table.text` method.)
-- **`WeeklyCheckins`** — DARN-style prompt + free-text response. Columns: `id`, `promptKey`, `responseText`, `createdAt`.
+## No network
 
-### Money
+The trust claim is that the app talks to nothing after the page loads.
 
-Amounts are integers in **minor units** (e.g., cents). Floats are never used for money. V1 assumes a single user-locale currency; no currency code is stored. If the app is ever localized for currencies that don't decimalize the same way, this assumption needs revisiting.
+`tool/check_no_network.sh` greps `index.html`, `styles.css` and `src/*.js` for absolute URLs, `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `RTCPeerConnection`, and `<form>`. It runs in CI on every push and pull request. `fetch` is forbidden outright — `glyphs.json` arrives through a static `import`, so nothing in the app needs it.
 
-### DAOs
+What this does not cover, and the README says so plainly: the server that hands you the page sees the request, and `localStorage` is not encrypted. Those are real regressions from the phone app, which shipped an encrypted database and declared no network permission at the OS level. A browser offers no equivalent of either.
 
-Currently only the methods needed by tests exist:
+## Glyph data and the editors
 
-- `ModuleDao`: `insertModule`, `getAllActive`.
-- `WaveDao`: `insertWave`, `getAllByModule` (newest-first), `totalCount`, `totalCountByModule`, `sumAmountByModule` (null-safe).
+`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `T`, `i`, `j` and `t` have a second, deferred one.
 
-DAOs grow with UI demand, not speculatively.
+The file is written one bezier per line so hand edits show up as readable diffs. `tool/test_glyphdata.py` asserts that loading and saving an untouched file is byte-identical, so opening an editor never churns the diff.
 
-### Encryption (SQLite3MultipleCiphers)
-
-`package:sqlite3 ^3.x` bundles SQLite3MultipleCiphers via the `hooks.user_defines.sqlite3.source: sqlite3mc` block in `pubspec.yaml`. The DB is opened with `NativeDatabase.createInBackground` (Drift recommended; runs DB on a background isolate), and a `PRAGMA key = '<base64>';` is issued in the connection setup callback. An `assert(_debugCheckHasCipher(...))` confirms in debug builds that the bundled binary actually supports encryption.
-
-### Key lifecycle
-
-`lib/data/secure/db_key.dart` (`DbKeyStore.getOrCreate`):
-
-- First open: 32 bytes from `Random.secure()`, base64-encoded, stored under `urge_surfer_db_key` in `flutter_secure_storage`. Base64 keeps the value SQL-metacharacter-free, so it can be interpolated into the `PRAGMA key = '...'` string without escaping.
-- Subsequent opens: read from `flutter_secure_storage`, return as-is.
-- iOS Keychain accessibility class: the `flutter_secure_storage` default (`kSecAttrAccessibleWhenUnlocked`) — key only readable while the device is unlocked.
-- No "regenerate key" / "wipe data" UX in v1. Clearing app data on Android also clears the Keystore-bound entry (fresh-install behavior). On iOS, the Keychain entry survives uninstall, but the encrypted DB file is gone with the app, making the lingering entry meaningless.
-
-### Code generation
-
-Drift uses `build_runner` for codegen. Generated files (`*.g.dart`) are gitignored, so contributors and CI must run:
-
-```
-dart run build_runner build --delete-conflicting-outputs
-```
-
-after `flutter pub get` and before `flutter analyze`. CI does this in `.github/workflows/ci.yml`.
-
-### Tests
-
-`test/data/db/wave_dao_test.dart` exercises the WaveDao contract against an in-memory `NativeDatabase.memory()`. In-memory SQLite is the same engine as on-disk — these are real-DB tests, not mocks. Cases: insert + read; totalCount across modules; per-module count isolation; sum ignores nulls; sum returns 0 on empty; cross-module query isolation; ordering newest-first.
-
-### What this layer does NOT yet test
-
-- **Encryption round-trip on a real file.** Writing with key A, closing, reopening without a key (expect failure) and with key A (expect success). Requires the bundled sqlite3mc native libs to be available to `flutter test` on the host — works in principle on Linux/macOS, fragile in practice. Deferred to integration_test on real devices.
-- **`DbKeyStore` behavior.** `flutter_secure_storage` requires a Flutter platform channel; the WaveDao tests bypass it by passing an explicit in-memory database to `AppDatabase`. Behavior verification waits for integration_test.
-- **Migration logic.** Schema is version 1 and only version 1; no `MigrationStrategy` until the schema changes.
-
-## Drawing controller (`WeightedTracingController`)
-
-The simulation behind the drawing-as-meditation mechanic. Pure Dart (only `dart:math` and `dart:ui` for `Offset`), no Flutter widgets or platform channels — fully unit-testable. Lives at `lib/domain/drawing/weighted_tracing_controller.dart`.
-
-### Model
-
-The pen position is a low-pass-filtered version of the finger position. Given a time constant `τ` (seconds) and a frame delta `Δt`:
-
-```
-α = 1 − exp(−Δt / τ)
-penPosition ← lerp(penPosition, fingerTarget, α)
-```
-
-This is the analytical discretization of a first-order linear filter, so 60Hz and 120Hz devices reach the same pen position after the same elapsed wall-clock time. A naive per-call `lerp(pen, finger, k)` would be frame-rate dependent — fast phones would feel less laggy. We don't want that.
-
-The controller also tracks how far along the template path the pen has reached (`templateIndex`). Each `tick`, after updating the pen position, it advances the index past every subsequent template point that is within `advanceThreshold` pixels of the current pen position. The index is monotonically non-decreasing — re-tracing or going off-path never reduces progress.
-
-### API
-
-- Constructor: `WeightedTracingController({required templatePoints, strokeStartIndices, timeConstant = 0.4, advanceThreshold = 8.0})`. Asserts `templatePoints.length >= 2` and `strokeStartIndices.first == 0`. `strokeStartIndices` defaults to `[0]` (single-stroke).
-- **Pen state**: defaults to **pen-up**. While pen is up, `setFingerTarget` is ignored and `tick` is a no-op — the pen freezes. The canvas calls `penDown()` on touch and `penUp()` on lift.
-- **Stroke advancement**: `templateIndex` advances only within the current stroke. To progress past a stroke boundary, the canvas calls `advanceStroke()` (typically gated on a touch landing near `nextStrokeStartPoint`); this teleports the pen to the next stroke's first template point.
-- `setFingerTarget(Offset)` — gesture handlers push finger position; ignored while pen is up.
-- `tick(Duration dt)` — call once per animation frame from a `Ticker`. `Duration.zero`, negative durations, and pen-up state are all no-ops.
-- Read-only getters: `penPosition`, `templateIndex`, `currentStrokeIndex`, `currentStrokeComplete`, `hasNextStroke`, `nextStrokeStartPoint`, `isPenDown`, `letterComplete` (whole path complete), `progress` (0.0–1.0).
-
-The split between `setFingerTarget` (gesture-pushed) and `tick` (ticker-pulled) matches Flutter's idiomatic animation pattern and makes the controller trivially testable — a test loop can call `tick(Duration(milliseconds: 16))` without needing a real `AnimationController`.
-
-### Tuning parameters
-
-- `timeConstant = 0.4 s`. Pen reaches ~63% of the way to the finger after 0.4s, ~95% after 1.2s. The "feel" parameter — slow enough to feel meditative, not so slow that it frustrates. Real tuning happens via playtesting against actual glyph templates and is per-instance, not global.
-- `advanceThreshold = 8.0 px`. How close the pen must come to the next template point for the index to advance. Densely sampled templates (e.g., one point every 2–4 px) make this easy to hit; sparse templates can leave the pen "stuck." Step 8 (glyph data) needs to keep this in mind.
-
-### What the tests lock in
-
-`test/domain/drawing/weighted_tracing_controller_test.dart` covers ten cases:
-
-- Initial state (pen at first point, index 0, not complete, progress 0.0).
-- Assertion fires for fewer than 2 points.
-- Single short tick with a far finger leaves the pen mostly behind (slowness mechanic).
-- Sufficient ticks with finger at end drive the pen to the end and complete the letter.
-- 60Hz and 120Hz controllers reach the same pen position after the same total elapsed time (frame-rate independence).
-- Finger held off the path doesn't advance the index.
-- `templateIndex` is monotonically non-decreasing across noisy input.
-- After completion, moving the finger backwards does not decrease `templateIndex`.
-- `tick(Duration.zero)` and `tick(<negative>)` are no-ops.
-
-## Ritual UI (vertical slice)
-
-The first end-to-end UI proves the foundation pieces wire together: DB on real device, Riverpod threading, gesture → controller → painter, ritual completion writes a wave that shows up in the ledger. Intentionally narrow: one hardcoded module, one hardcoded phrase, stubbed letter templates, no timer, no money entry, no onboarding.
-
-### Layout
-
-- `lib/main.dart` — bootstrap. Opens the database synchronously (`AppDatabase.open()` returns immediately; the underlying connection is opened lazily on first use), wraps the app in a `ProviderScope` overriding `appDatabaseProvider`.
-- `lib/app/app.dart` — `MaterialApp.router` + `GoRouter` with two routes: `/` → `LedgerScreen`, `/ritual` → `RitualFlowScreen`.
-- `lib/app/providers.dart` — Riverpod scope. Three providers: `appDatabaseProvider` (overridden in `main` and tests), `seedModuleIdProvider` (idempotent first-run seed of one module), `waveTotalCountProvider` (UI-bound count).
-- `lib/ui/ledger/ledger_screen.dart` — total count + "Start a wave" button. Force-watches `seedModuleIdProvider` so the seed runs at startup, before the user can tap into the ritual flow. Invalidates `waveTotalCountProvider` when the ritual screen pops.
-- `lib/ui/ritual/ritual_flow_screen.dart` — sequential step machine: `nameUrge → preSlider → drawing → postSlider`. State lives in widget-local `setState` for the slice; promotion to a Riverpod `Notifier` happens when multi-phrase scheduling and the timer enter the picture.
-- `lib/ui/ritual/widgets/drawing_canvas.dart` — wires `WeightedTracingController` to a `Ticker` (frame updates), a `GestureDetector` (finger target), and a `CustomPainter` (template, completed segment, pen). Uses a `ValueKey(letterIndex)` from the parent so each letter gets a fresh state via Flutter's reconciliation, rather than `didUpdateWidget` plumbing.
-- `lib/domain/ritual/stub_glyphs.dart` — placeholder template path (one horizontal line, 20 sample points, 80 px wide) for any character. Real Latin paths land later without changing any UI code.
-
-### Hardcoded for the slice
-
-- **Phrase**: `"I can be gentle."` (string literal in `ritual_flow_screen.dart`). JSON-loaded phrase rotation is a later concern.
-- **Module**: a single seeded row, name `"betting"`, `moneyTracked: false`, `phraseSet: "general"`. Created by `seedModuleIdProvider` on first run if no modules exist; reused thereafter. The `moneyTracked: false` choice keeps the slice tight by skipping the money-entry screen.
-
-### Testing
-
-- `test/widget_test.dart` — two `LedgerScreen` smoke tests against an in-memory `AppDatabase`: zero-state shows "0 waves surfed", and after one inserted wave shows "1 wave surfed" (verifying both the count read and the singular/plural pluralization branch).
-- Gesture-chain widget tests (pan-drag through the drawing canvas) are deferred. They are doable with `WidgetTester.timedDrag` but slow and finicky; the controller's behavior is already locked in by `weighted_tracing_controller_test.dart`, and the canvas wiring is best verified end-to-end on a real device.
-
-### Manual verification (must run on a device or simulator)
-
-`flutter run` and confirm:
-
-1. The app boots to the ledger showing `0 / waves surfed`.
-2. Tap "Start a wave" → ritual screen, "What do you want to do right now?" prompt.
-3. Type something, tap Next → pre-slider; pick a value 0–10, Next.
-4. Drawing screen: each letter of the phrase appears as a faint horizontal underline; dragging a finger left-to-right across it advances the pen, the completed segment darkens, and the next letter appears when the pen reaches the end. Faster finger movement leaves the pen lagging behind — the "weighted" feel.
-5. After the last letter, post-slider; pick a value, "Log wave".
-6. Back at the ledger, the count is `1`. Kill the app and relaunch — count stays at `1` (encryption + persistence both working).
-
-### What this layer does NOT yet have
-
-- Onboarding (welcome, module setup, intention writing, prominence prompt).
-- Multi-module picker.
-- Money-tracked entry screen.
-- Ritual timer (3–10 min).
-- Breathing pacer animation.
-- Ledger details (per-module breakdown, money saved, timeline, goal progress).
-- Real Latin glyph paths.
-- Weekly check-in prompts.
-- Settings screen.
-- Theming pass beyond default Material 3 with a deep-purple seed.
-
-These all land in step 7 (breadth fill-in) and step 8 (glyph data).
-
-## Cursive glyph layer
-
-The drawing-as-meditation mechanic is supposed to evoke calligraphy, not horizontal underlines. The cursive glyph layer replaces the stub templates with real cursive paths, and switches the ritual flow from letter-indexed (one stub per letter) to **word-indexed** (one continuous stroke per word, with pen "lifts" only between words). Step 8a ships the minimum character set to render the slice phrase `"I can be gentle."` end-to-end (10 glyphs); step 8b will fill in the rest.
-
-### Layout
-
-- `lib/domain/drawing/glyphs/bezier.dart` — `cubicBezierAt(t, p0, p1, p2, p3)` and `sampleCubic(curve, n)`. Pure math; no Flutter dependencies beyond `dart:ui.Offset`.
-- `lib/domain/drawing/glyphs/cursive_glyphs.dart` — aggregates lowercase, uppercase, and punctuation maps of editable `CursiveGlyph` Bézier centerlines. Lowercase paths are seeded from the MIT-licensed letterpaths dataset; uppercase and punctuation are hand-authored.
-- `tool/glyph_editor.py` — edits those centerlines directly. Its optional Sacramento overlay renders the vendored OFL font beneath the paths, normalized to the same baseline and x-height, so the existing anchors can be reshaped without losing deliberate stroke order.
-- `lib/domain/drawing/glyphs/word_composer.dart` — exposes `composeWord(word, scale)` and `composePhrase(phrase, scale, unitSpaceWidth)`, both returning the unified `ComposedPath { points, letterStartIndices, letterEndIndices, letterCenterX, strokeStartIndices }`. `points` is the dense path; `letterStartIndices`/`letterEndIndices` are inclusive ranges per letter; `strokeStartIndices` marks where each stroke begins. `composePhrase` does **not** insert any bridging samples between words — between strokes, the points list jumps in absolute coords and the painter must `moveTo` rather than `lineTo` at those indices. The user must lift their finger and tap near the next stroke's start to begin tracing it.
-- `lib/ui/ritual/widgets/drawing_canvas.dart` — handles raw pointer events via `Listener` (so taps without drag also fire). On pointer-down: if the current stroke is complete, the touch must land within `_nextStrokeTouchGate` (100 px world-space) of `controller.nextStrokeStartPoint` for the canvas to call `advanceStroke()` and `penDown()`; otherwise the touch is ignored. On pointer-move: forwards finger world-position into `setFingerTarget`. On pointer-up/cancel: calls `penUp()` (pen freezes; templateIndex stays). Camera target is `canvasWidth/2 − letterCenterX[i]` where `i` is whichever letter contains the pen, with one carve-out: when the current stroke is complete and a next stroke exists, the target jumps to the next stroke's first letter so the user can see where to tap. `panOffsetX` tweens toward the target via a low-pass filter (`τ = 0.25 s`).
-- `lib/ui/ritual/ritual_flow_screen.dart` — composes the entire phrase once with `composePhrase` and passes the resulting `ComposedPath` to a single `DrawingCanvas`. `onLetterComplete` fires once at end-of-phrase, advancing to the post-slider step.
-
-### Coordinate system
-
-Glyphs are authored in unit coordinates with this convention:
-
-- `x ∈ [0, advanceWidth]` left-to-right.
-- `y ∈ [0, 100]` top-to-bottom (Flutter Y).
-- Baseline at `y = 70`. x-height (top of `a`, `c`, `e`, `n`) at `y = 30`. Ascender top (`b`, `l`, `t`, `I`) at `y = 10`. Descender bottom (`g`) at `y = 95`.
-- Entry and exit anchors remain explicit parts of each centerline. `composeWord` uses each editable advance width and adds a tangent-matched cubic bridge between consecutive letters.
-
-`composeWord` scales these unit points by `defaultGlyphScale = 2.2`, adds 8 unit coordinates of letter spacing, and applies the existing 10-degree cursive slant.
-
-
-### Glyph editor
-
-Launch the editor from the repository root:
+There are **two editors, deliberately separate**. Letterforms and connections are different jobs with different data, and one tool doing both made each of them worse.
 
 ```sh
 sudo apt install python3-tk python3-pil
-python3 tool/glyph_editor.py
+python3 tool/glyph_editor.py     # the letterforms, one at a time
+python3 tool/join_editor.py      # how two letters connect
 ```
 
-The **Sacramento overlay** toggle is enabled by default when Pillow and the vendored font are available. Its adjacent slider controls opacity. The purple path remains the editable centerline; red points are endpoint anchors and blue points are control handles. The overlay uses Sacramento font metrics to align with the editor baseline and x-height, and it stays aligned while panning or zooming. Use **Save to file** to persist edits to the lowercase, uppercase, and punctuation source files.
+Both import `tool/glyphdata.py`, which owns the file loading and saving, the bezier maths and the join algorithm, and has no UI in it so it stays testable headless.
 
-### Multi-stroke letters
+### `glyph_editor.py` — letterforms
 
-The centerline data explicitly records stroke order. Dots, crossbars, and other intentional pen lifts remain separate deferred strokes rather than being inferred from a filled font outline.
+Drag red anchors and blue handles; add, delete, disconnect and snap-merge anchors; pan with right-drag and zoom with the wheel. The Sacramento overlay renders the vendored font beneath the paths, normalised to the same baseline and x-height, as a visual reference — stroke order stays deliberate and hand-authored rather than inferred from a font outline.
 
-### Pan-scroll and pen-up/down
+Stroke 1 is the joinable one; every stroke after it is a second pass, drawn after the word is finished and begun with a tap. `+ Stroke` appends one, `Make main` promotes the selected stroke to first. `Make main` is what capital `T` needed: its stroke 1 was the crossbar rather than the stem, which is why there appeared to be no way to add a second stroke to it.
 
-The drawing canvas is square and at most 320×320 logical pixels. On compact screens it shrinks to the horizontal space supplied by its parent instead of overflowing. Long phrases remain wider than the viewport. Camera behavior:
+### `join_editor.py` — connections
 
-- **While the pen is inside a letter** (`templateIndex ∈ [letterStartIndices[i], letterEndIndices[i]]`): camera target is `letterCenterX[i]`. The canvas sits still on the active letter.
-- **When the current stroke is complete and a next stroke exists**: camera target jumps to the first letter of the next stroke. The user sees the next word slide in from the right, with a small target ring drawn at the next stroke's first template point as a visual prompt to tap there.
-- **All strokes complete**: camera stays on the final letter.
+Type a pair or step through all 1352 with the arrow keys; "Untuned only" skips the ones already done. Two orange markers set where each letter is cut — drag them along their letter's path, searched locally so a cut cannot jump across a letter where the path loops back over itself. Two blue handles shape the bezier between the cuts. Dragging anywhere else kerns. Grey dashed shows what each letter gives up.
 
-`panOffsetX` is tweened toward the target by a low-pass filter (`τ = 0.25 s`).
+The view frames each pair on its **join** rather than on the letters, letting tall glyphs crop — fitting `g` whole shrinks the connection to a few pixels, and the connection is the thing being edited.
 
-Pen-up/down semantics: each stroke must be initiated by the user touching near its start, and the pen freezes whenever the finger leaves the canvas. The canvas uses `Listener` for raw pointer events so a brief tap (no drag) also registers. Pointer-down workflow:
-1. Convert the touch to world coords.
-2. If the controller's `currentStrokeComplete && hasNextStroke`, check the touch is within `_nextStrokeTouchGate = 100 px` (world-space) of `nextStrokeStartPoint`. If too far, the touch is ignored.
-3. Otherwise call `advanceStroke()` (teleports the pen to the next stroke's first template point), then `setFingerTarget(world)` and `penDown()`.
+**Real weight** strokes the preview at the width the app uses. The editor otherwise draws centrelines, which is what you want for placing handles and useless for judging how heavy a join reads: `LINE_WIDTH = 16` in `canvas.js` is 4.6% of a word's ink height, against roughly 0.5% for the editor's editing view. The two numbers it copies out of the app are mirrored in `glyphdata.py` and checked against `composer.js`/`canvas.js` by `tool/test_glyphdata.py`.
 
-Pointer-move forwards `setFingerTarget`. Pointer-up/cancel calls `penUp()`, which freezes the pen and templateIndex.
+Geometry otherwise matches the app exactly. It briefly did not: `composePhrase` used to shear the whole path 10° after joining, which the editor never showed, so a join tuned to look balanced arrived on screen leaning. The shear was removed rather than mirrored — what you draw in the editor is now what ships.
 
-Two visual indicators in addition to the existing pen circle and template:
-- **Finger cursor**: a small open circle at the real finger position whenever the pen is down. Lets the user see "where I am" alongside the inertia-lagged pen.
-- **Next-stroke target ring**: an open ring at the next stroke's first template point when the current stroke is complete. Disappears once the user advances.
+#### Cut fractions are arc length, not bezier parameter
 
-Initial state: the canvas opens with the first letter centered (`panOffsetX = width/2 − letterCenterX[0]`).
+`from` and `to` index into a stroke's respaced point list, so they mean *fraction of the drawn line*. `glyphdata.py` therefore has to respace exactly as `composer.js` does. It briefly did not — it sampled at even steps of `t` — which put every cut somewhere other than where the app applied it, by a median of 6 glyph units and up to 21. The stored fractions from that period were converted in place: both samplings trace the same curve, so the arc-length fraction of the intended point is recoverable exactly, and the conversion landed every cut within 0.834 units of where it was drawn — inside the 0.909-unit point spacing, which is the resolution the format can express at all.
 
-Vertical centering happens once at canvas init — the full phrase's vertical midpoint is shifted to the canvas vertical center; no vertical scrolling.
+A pair is stored only once it differs from the automatic join, so `pairs.json` stays a record of decisions rather than of defaults, and `Reset` drops one back to automatic. The global `Join gap` lives here too, since it is the same kind of decision.
 
-Gestures: `_toWorld(local)` translates a local touch into world coords by subtracting the current `panOffsetX`. So if the user touches the right edge of the canvas, they're targeting a world position ahead of the pen — the controller follows with the same lag as before.
+**Tune the glyphs before the pairs.** A pair is tuned against a glyph's current shape, so reshaping a letter afterwards invalidates every pair that uses it — up to 52 of them for a letter used in both cases.
 
-### Phrase-as-single-template ritual flow
-
-`RitualFlowScreen` composes the whole phrase once with `composePhrase` and passes the `ComposedPath` to one `DrawingCanvas`. The controller's `letterComplete` fires when the pen reaches the last point of the last word, which advances the ritual to the post-slider step. There is no per-word state in the parent — a single canvas instance handles the entire phrase, which is what enables continuous scrolling across word boundaries (a per-word canvas would remount and reset the camera at every word).
-
-`DrawingCanvas`'s parameter is still named `onLetterComplete` for legacy reasons — the abstraction it represents is "trace template complete." Worth a follow-up rename if it gets confusing.
-
-### advanceThreshold scaling
-
-`WeightedTracingController` defaults to `advanceThreshold = 8` in template-coord units. With the composer scaling all points by 2.2, the canvas constructs the controller with `advanceThreshold = 8 * defaultGlyphScale = 17.6` so the pen advances at the same perceived rate as before scaling. The `word_composer_test.dart` no-gaps test ensures sample density remains fine enough that the pen cannot get stuck between template points.
-
-### Character set
-
-All basic Latin letters `a–z` and `A–Z`, plus period `.`, have editable centerlines. Sacramento is a visual reference in the editor, not an automatic source of stroke order. `composeWord`/`composePhrase` continues to throw `ArgumentError` for unsupported punctuation or symbols.
-
-### Visual iteration warning
-
-Unlike DAO contract tests or controller physics tests, step 8 verification is **visual and subjective**. The first authored bezier curves are approximations. After running on the device, expect a "longer descender on g," "smoother c entry," "t crossbar feels off" feedback loop. The data file (`cursive_glyphs.dart`) is the only place that needs to change for visual tweaks; no architectural churn.
-
-### Tests
-
-- `test/domain/drawing/glyphs/bezier_test.dart` — endpoints, midpoint of straight-line bezier, sample count.
-- `test/domain/drawing/glyphs/word_composer_test.dart` — empty/single/multi-letter behavior, dense sampling guarantee (no gaps > scaled advance threshold), error on unsupported chars, all chars in the slice phrase resolve.
-
-The pan-scroll transform itself is widget-level and is verified manually on the device, consistent with how the rest of the canvas is verified.
-
-## Open infrastructure concerns
-
-- **gradlew not committed.** The project `.gitignore` excludes `**/android/gradlew` and `**/android/gradle/wrapper/gradle-wrapper.jar`. Flutter regenerates gradle wrapper artifacts from `flutter create`, so this is workable, but contributors will need to run `flutter create .` (or equivalent) once on checkout. Reconsider if it causes friction.
+Glyph work is **visual and subjective**. Expect a "longer descender on g, smoother c entry" feedback loop; `glyphs.json` is the only file that needs to change for it.
 
 ## Verification status
 
-- `flutter pub get`: ✓
-- `flutter analyze`: ✓ (no issues)
-- `flutter run` on a device: not yet verified — no emulator available in the dev environment used to scaffold. To verify locally: `flutter run` on any connected iOS simulator or Android emulator should boot the default Flutter counter app at this stage.
+- `node --test test/` — 17 tests, passing.
+- `python3 -m unittest tool.test_glyphdata` — 6 tests, passing (the composer cross-check needs node 20+ on `PATH`, and skips otherwise).
+- `bash tool/check_no_network.sh` — passing.
+- Manually driven in Chrome: full ritual flow, all four strokes of a phrase traced end to end, stroke gating, completion, camera settling, and rendering at both desktop and phone canvas widths.
+
+## Not built yet
+
+Onboarding, multiple modules, money tracking, the ritual timer, a breathing pacer, ledger detail beyond the count, weekly check-ins, settings, and wiring `assets/phrases/` in place of the hardcoded list in `src/phrases.js`.

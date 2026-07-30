@@ -10,12 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - uses: actions/setup-node@v4
         with:
-          flutter-version: 3.41.9
-          channel: stable
-      - run: flutter pub get
-      - run: dart run build_runner build --delete-conflicting-outputs
-      - run: flutter analyze
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: bash tool/check_no_network.sh
-      - run: flutter test
+      - run: node --test test/
+      - run: pip install pillow
+      - run: python -m unittest tool.test_glyphdata

@@ -1,0 +1,8 @@
+{
+  "name": "urge-surfer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
