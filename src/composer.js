@@ -33,15 +33,21 @@ export const GLYPH_SCALE = 2.2;
 const SPACE_WIDTH = 30;
 
 /**
- * A letter hands over to the next at whatever height the previous one exited,
- * so long as that lands in the band between the x-height and the baseline —
- * where cursive connections belong. Clamping matters for the capitals, whose
- * exits range from y = 5 to y = 72; without it, a letter following a capital
- * that exits up near the ascender would have its whole opening stroke trimmed
- * away. Glyphs are not laid out by `advanceWidth`; the join sets the spacing.
+ * Every letter hands over to the next at one fixed height, and the connecting
+ * stroke is drawn once: each letter's opening rise from the baseline is
+ * trimmed, each letter's closing rise is cut at its own `leadOut`, and the
+ * bridge draws what is left. Both halves used to be kept, which is why a join
+ * doubled back to the baseline and needed tuning per pair.
+ *
+ * 51 was measured two ways. Across 56 hand-tuned pairs the second letter's cut
+ * landed at y = 50.0..52.2 for 24 of the 26 letters — a spread of one to two
+ * point spacings, the resolution the data can express. And Sacramento, which
+ * has no OpenType joining features and joins by a fixed convention baked into
+ * its outlines, hands over at 46% of its x-height, which is y = 51.6 here.
+ *
+ * Glyphs are not laid out by `advanceWidth`; the join sets the spacing.
  */
-const BASELINE_Y = 70;
-const X_HEIGHT_Y = 30;
+const HANDOVER_Y = 51;
 
 /**
  * Compose a phrase into a `ComposedPath`:
@@ -104,8 +110,10 @@ function appendWord(word, scale, startX, path) {
     // shift each other, then take the surviving middle.
     const full = samplePoints(main, scale);
     const head = into ? cutIndex(full, into.to)
-      : exit ? leadInLength(full, exit.y, scale) : 0;
-    const tail = outOf ? cutIndex(full, outOf.from) : full.length - 1;
+      : exit ? leadInLength(full, scale) : 0;
+    const tail = outOf ? cutIndex(full, outOf.from)
+      : i < characters.length - 1 ? cutIndex(full, glyphs[characters[i]].leadOut ?? 1)
+        : full.length - 1;
     let points = full.slice(head, Math.max(tail, head + 1) + 1);
 
     // Place the letter so its opening cut lands where the join wants it.
@@ -153,15 +161,12 @@ function samplePoints(stroke, scale) {
 
 /**
  * How many leading points are lead-in — the opening stroke rising from the
- * baseline to the height the previous letter left off at, which that letter's
- * exit has already drawn. Dropping it is what lets two letters meet as one
- * continuous line instead of doubling back to the baseline between them.
- * 0 when the glyph already starts at or above that height, as the capitals
- * and the period do.
+ * baseline to the handover height, which the bridge draws instead. 0 when the
+ * glyph already starts at or above that height, as most of the capitals and
+ * the period do.
  */
-function leadInLength(points, exitY, scale) {
-  const target = Math.min(BASELINE_Y * scale, Math.max(X_HEIGHT_Y * scale, exitY));
-  return Math.max(0, points.findIndex((point) => point.y <= target));
+function leadInLength(points, scale) {
+  return Math.max(0, points.findIndex((point) => point.y <= HANDOVER_Y * scale));
 }
 
 /**

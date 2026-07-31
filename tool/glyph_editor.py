@@ -48,9 +48,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tool.glyphdata import (  # noqa: E402
     ANCHOR_EPS, DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y, DEFAULT_SCALE, GLYPHS_FILE,
-    HIT_R, REFERENCE_LINES, SACRAMENTO_FONT, SNAP_RADIUS, ZOOM_FACTOR,
-    dump_glyphs, load_glyphs, load_sacramento_reference, reverse_bezier_list,
-    sample_cubic, split_cubic,
+    HIT_R, REFERENCE_LINES, SACRAMENTO_FONT, SAMPLES_PER_CURVE, SNAP_RADIUS,
+    ZOOM_FACTOR, _sample_stroke, cubic_at, cut_index, dump_glyphs, load_glyphs,
+    load_sacramento_reference, reverse_bezier_list, sample_cubic, split_cubic,
 )
 
 try:
@@ -76,6 +76,7 @@ import io
 # Rendering / interaction
 ANCHOR_R = 7
 HANDLE_R = 5
+CUT_R = 9
 SELECTED_R_BONUS = 3
 ADD_HIT_R = 20
 
@@ -127,8 +128,8 @@ class GlyphEditor:
 
     @staticmethod
     def _deep_copy_glyph(glyph):
-        adv, strokes = glyph
-        return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes]]
+        adv, strokes, lead_out = glyph
+        return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes], lead_out]
 
     @classmethod
     def _deep_copy(cls, glyphs):
@@ -306,10 +307,19 @@ class GlyphEditor:
         if self.translate_mode:
             self._status("Move-letter mode: drag on empty canvas to translate the whole letter.")
             return
+        if self.drag_state and self.drag_state.get("type") == "lead_out":
+            lead_out = self.glyphs_working[self.current_key][2]
+            points = self._lead_out_points()
+            x, y = points[cut_index(points, lead_out)]
+            self._status(
+                f"Lead-out {lead_out:.4f} at ({x:.2f}, {y:.2f}) — "
+                f"grey is drawn by the run-up to the next letter, not by this one."
+            )
+            return
         if self.selected is None:
             self._status(
-                "Click anchor (red) for coords, handle (blue) for angle. "
-                "+ Add, - Delete, Disconnect."
+                "Click anchor (red) for coords, handle (blue) for angle, "
+                "orange for the lead-out. + Add, - Delete, Disconnect."
             )
             return
         s, b, p = self.selected
@@ -411,6 +421,12 @@ class GlyphEditor:
             self._update_status()
             self._redraw()
             return
+        if self._hit_test_lead_out(event):
+            self.selected = None
+            self.drag_state = {"type": "lead_out"}
+            self._update_status()
+            self._redraw()
+            return
         if self.translate_mode:
             self.drag_state = {"type": "translate", "last": (event.x, event.y)}
             return
@@ -445,6 +461,10 @@ class GlyphEditor:
                         pt[1] += dy
             ds["last"] = (event.x, event.y)
             self._redraw()
+        elif ds["type"] == "lead_out":
+            self._drag_lead_out(event)
+            self._update_status()
+            self._redraw()
 
     def _on_release_1(self, event):
         ds = self.drag_state
@@ -454,6 +474,8 @@ class GlyphEditor:
         if ds["type"] == "point":
             self._try_snap_on_release(ds["targets"])
             self._update_status()
+            self._redraw()
+        elif ds["type"] == "lead_out":
             self._redraw()
         elif ds["type"] == "translate":
             self._status(f"Translated '{self.current_key}'. Save to persist.")
@@ -673,7 +695,7 @@ class GlyphEditor:
 
     def _redraw(self):
         self.canvas.delete("all")
-        adv, strokes = self.glyphs_working[self.current_key]
+        adv, strokes, _lead_out = self.glyphs_working[self.current_key]
         w = self.canvas.winfo_width() or 1100
         h = self.canvas.winfo_height() or 800
 
@@ -708,6 +730,8 @@ class GlyphEditor:
                     font=("TkDefaultFont", 10),
                 )
 
+        self._draw_lead_out()
+
         for s_idx, beziers in enumerate(strokes):
             for b_idx, bez in enumerate(beziers):
                 p0 = self._to_canvas(*bez[0])
@@ -727,6 +751,52 @@ class GlyphEditor:
                         cx - r, cy - r, cx + r, cy + r,
                         fill=color, outline="black", width=1,
                     )
+
+
+    # --- Lead-out ---
+    #
+    # Where this letter's tail stops when another letter follows it. Everything
+    # past the marker is the run-up to the next letter, which the app draws once
+    # rather than once per letter; grey shows what is given up.
+
+    def _lead_out_points(self):
+        """The main stroke, sampled the way the app samples it."""
+        strokes = self.glyphs_working[self.current_key][1]
+        return _sample_stroke(strokes[0]) if strokes and strokes[0] else []
+
+    def _draw_lead_out(self):
+        points = self._lead_out_points()
+        if len(points) < 2:
+            return
+        cut = cut_index(points, self.glyphs_working[self.current_key][2])
+        if cut < len(points) - 1:
+            self._polyline(points[cut:], fill="#9e9e9e", width=3, dash=(4, 3))
+        cx, cy = self._to_canvas(*points[cut])
+        r = CUT_R + (SELECTED_R_BONUS if self.drag_state
+                     and self.drag_state.get("type") == "lead_out" else 0)
+        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill="#ff9800", outline="black", width=1)
+
+    def _hit_test_lead_out(self, event):
+        points = self._lead_out_points()
+        if len(points) < 2:
+            return False
+        cut = cut_index(points, self.glyphs_working[self.current_key][2])
+        cx, cy = self._to_canvas(*points[cut])
+        return (cx - event.x) ** 2 + (cy - event.y) ** 2 <= HIT_R ** 2
+
+    def _drag_lead_out(self, event):
+        """Move the cut along the stroke, searched near where it already is.
+        Searching the whole stroke would let it jump wherever the path loops
+        back over itself, as p and o do."""
+        points = self._lead_out_points()
+        last = len(points) - 1
+        gx, gy = self._to_glyph(event.x, event.y)
+        near = int(self.glyphs_working[self.current_key][2] * last)
+        span = max(2, int(0.12 * last))
+        window = range(max(0, near - span), min(last, near + span) + 1)
+        best = min(window, key=lambda i: (points[i][0] - gx) ** 2 + (points[i][1] - gy) ** 2)
+        self.glyphs_working[self.current_key][2] = round(best / max(1, last), 4)
 
 
 def main():

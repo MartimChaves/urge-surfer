@@ -32,10 +32,12 @@ JOIN_FILE = REPO / "src" / "join.json"
 PAIRS_FILE = REPO / "src" / "pairs.json"
 SACRAMENTO_FONT = REPO / "vendor" / "sacramento" / "Sacramento-Regular.ttf"
 
-# Sacramento metrics: x-height 627 units in a 2048-unit em. The overlay is
-# normalized onto the editor baseline (y=70) and x-height guide (y=30).
+# Sacramento metrics, in a 2048-unit em. The overlay is normalized onto the
+# editor baseline (y=70) and, depending on case, the x-height guide (y=30) or
+# the ascender guide (y=0).
 SACRAMENTO_UNITS_PER_EM = 2048
 SACRAMENTO_X_HEIGHT = 627
+SACRAMENTO_CAP_HEIGHT = 1550
 SACRAMENTO_RENDER_SIZE = 1024
 
 # Rendering / interaction
@@ -63,12 +65,13 @@ REFERENCE_LINES = [
 
 
 def load_glyphs(path=GLYPHS_FILE):
-    """Read `glyphs.json` into `{key: [advance_width, strokes]}`, where
-    `strokes` is a list of beziers and each bezier is a list of four mutable
-    `[x, y]` control points."""
+    """Read `glyphs.json` into `{key: [advance_width, strokes, lead_out]}`,
+    where `strokes` is a list of beziers and each bezier is a list of four
+    mutable `[x, y]` control points. `lead_out` is where the letter's tail is
+    cut when something follows it; 1.0 keeps the whole stroke."""
     raw = json.loads(path.read_text())
     return {
-        key: [glyph["advanceWidth"], glyph["strokes"]]
+        key: [glyph["advanceWidth"], glyph["strokes"], glyph.get("leadOut", 1.0)]
         for key, glyph in raw.items()
     }
 
@@ -84,7 +87,7 @@ def dump_glyphs(glyphs):
 
     entries = []
     for key in sorted(glyphs):
-        adv, strokes = glyphs[key]
+        adv, strokes, lead_out = glyphs[key]
         strokes_text = ",\n".join(
             "      [\n"
             + ",\n".join(f"        {bezier(bez)}" for bez in stroke)
@@ -94,6 +97,7 @@ def dump_glyphs(glyphs):
         entries.append(
             f"  {json.dumps(key)}: {{\n"
             f'    "advanceWidth": {num(adv)},\n'
+            f'    "leadOut": {num(lead_out)},\n'
             f'    "strokes": [\n{strokes_text}\n    ]\n'
             f"  }}"
         )
@@ -164,9 +168,17 @@ def load_sacramento_reference(character):
     draw.text((-left, -top), character, font=font, fill=255, anchor="ls")
 
     font_units_per_pixel = SACRAMENTO_UNITS_PER_EM / SACRAMENTO_RENDER_SIZE
-    glyph_units_per_pixel = 40.0 / (
-        SACRAMENTO_X_HEIGHT / font_units_per_pixel
-    )
+
+    # Capitals are matched on cap height, lowercase on x-height. Sacramento is a
+    # script face with flamboyant capitals — cap height 1550 against an x-height
+    # of 627, a ratio of 2.47 where a text face sits near 1.4 — so normalising
+    # everything on the x-height puts a capital 99 units above the baseline, 39
+    # past the ascender guide, and the reference has to be shrunk by eye before
+    # it is any use. On cap height it lands on the ascender guide, which is
+    # where this dataset's own capitals sit.
+    reference, target = ((SACRAMENTO_CAP_HEIGHT, 70.0) if character.isupper()
+                         else (SACRAMENTO_X_HEIGHT, 40.0))
+    glyph_units_per_pixel = target / (reference / font_units_per_pixel)
     bounds = (
         left * glyph_units_per_pixel,
         70.0 + top * glyph_units_per_pixel,
@@ -186,6 +198,18 @@ def load_sacramento_reference(character):
 JOIN_SAMPLES = 400      # working resolution before respacing, as in composer.js
 BASELINE_Y = 70
 X_HEIGHT_Y = 30
+
+# Every letter hands over to the next at one fixed height. Mirrored from
+# src/composer.js. Measured two ways: across 56 hand-tuned pairs the second
+# letter's cut landed at y = 50.0..52.2 for 24 of the 26 letters, a spread of
+# one to two point spacings; and Sacramento, which joins by a fixed convention
+# rather than by any OpenType feature, hands over at 46% of its x-height, which
+# is y = 51.6 here.
+HANDOVER_Y = 51.0
+
+# How many trailing samples of a stroke may be a bezier overshooting its own end
+# point rather than part of the letter. `s` uses one.
+OVERSHOOT_SAMPLES = 2
 
 # How the app finally draws a composed path. Mirrored from src/composer.js and
 # src/canvas.js so the join editor can show what will actually appear on screen;
@@ -268,15 +292,59 @@ def _direction(a, b):
     return (1.0, 0.0) if length < 1e-3 else (dx / length, dy / length)
 
 
-def lead_in_length(points, exit_y):
+def lead_in_length(points, handover_y=HANDOVER_Y):
     """How many opening points are lead-in: the rise from the baseline up to
-    the height the previous letter left off at, clamped to the band between
-    the x-height and the baseline where cursive connections belong."""
-    target = min(BASELINE_Y, max(X_HEIGHT_Y, exit_y))
+    the handover height. Dropping it is what lets two letters meet as one
+    continuous line instead of doubling back to the baseline between them.
+    0 when the glyph already starts at or above that height, as most of the
+    capitals and the period do."""
     for i, (_x, y) in enumerate(points):
-        if y <= target:
+        if y <= handover_y:
             return i
     return 0
+
+
+def suggest_lead_out(points):
+    """Where a letter's tail should be cut when something follows it: the far
+    end of the terminal rise, walking back from the exit while the stroke is
+    still climbing and still below the baseline, so a descender loop cannot
+    swallow the letter. The mirror of `lead_in_length` — between them the
+    connecting stroke is drawn once, by the bridge, instead of half by each
+    letter.
+
+    1.0 (keep the whole tail) when the letter does not exit at the handover
+    height. That is most of the capitals, whose exits run from y = 4.5 to
+    y = 72: their last stroke is the letterform, not a lead-out, and cutting
+    it back to the baseline takes the letter with it.
+    """
+    if not (X_HEIGHT_Y <= points[-1][1] <= BASELINE_Y):
+        return 1.0
+
+    # Start from the top of the rise, not from the last point. `s` overshoots on
+    # its final bezier and comes back down and to the left over its last sample,
+    # which is enough to stop the walk below on its first step and leave the
+    # whole tail in place. Only a sample or two of that is ever an overshoot —
+    # letters that genuinely end on a descent, `O P U` and the period, would
+    # otherwise be walked back through half the letterform.
+    i = len(points) - 1
+    for _ in range(OVERSHOOT_SAMPLES):
+        if i > 0 and points[i - 1][1] < points[i][1]:
+            i -= 1
+
+    while i > 0 and points[i - 1][1] >= points[i][1] and points[i - 1][1] < BASELINE_Y:
+        i -= 1
+
+    # The cut also has to stay the rightmost surviving point. The next letter is
+    # placed relative to it, so cutting back behind ink this letter already laid
+    # down drops the next letter straight on top of it — capitals C, E, J, S and
+    # X sweep well to the right and return to the baseline before they exit.
+    rightmost, running = [], -math.inf
+    for x, _y in points:
+        running = max(running, x)
+        rightmost.append(running)
+    while i < len(points) - 1 and points[i][0] < rightmost[i]:
+        i += 1
+    return round(i / (len(points) - 1), 4)
 
 
 def _bridge(start, start_dir, end, end_dir):
@@ -311,6 +379,7 @@ def compose_run(glyphs, keys, gap, pairs=None):
     joins = [pairs.get(keys[i] + keys[i + 1]) for i in range(len(keys) - 1)]
     run = []
     exit_point = exit_dir = None
+    prev_from = 1.0
     for i, key in enumerate(keys):
         strokes = glyphs[key][1]
         full = _sample_stroke(strokes[0]) if strokes else []
@@ -322,10 +391,15 @@ def compose_run(glyphs, keys, gap, pairs=None):
         if into:
             head = cut_index(full, into["to"])
         elif exit_point:
-            head = lead_in_length(full, exit_point[1])
+            head = lead_in_length(full)
         else:
             head = 0
-        tail = cut_index(full, out_of["from"]) if out_of else len(full) - 1
+        if out_of:
+            tail = cut_index(full, out_of["from"])
+        elif i < len(keys) - 1:
+            tail = cut_index(full, glyphs[key][2])
+        else:
+            tail = len(full) - 1
         points, trimmed = full[head:max(tail, head + 1) + 1], full[:head + 1]
 
         offset = (exit_point[0] + (into["dx"] if into else gap) - points[0][0]
@@ -336,7 +410,8 @@ def compose_run(glyphs, keys, gap, pairs=None):
         bridge, used = [], None
         if exit_point:
             entry_dir = _direction(points[0], points[1])
-            used = into or _auto_join(exit_point, exit_dir, points[0], entry_dir, gap, full, head)
+            used = into or _auto_join(exit_point, exit_dir, points[0], entry_dir,
+                                      gap, full, head, prev_from)
             bridge = _bridge_from(exit_point, points[0], used)
         run.append({
             "key": key, "offset": offset, "points": points,
@@ -344,16 +419,19 @@ def compose_run(glyphs, keys, gap, pairs=None):
             "head": head, "tail": tail, "sample_count": len(full),
         })
         exit_point, exit_dir = points[-1], _direction(points[-2], points[-1])
+        prev_from = round(tail / max(1, len(full) - 1), 4)
     return run
 
 
-def _auto_join(start, start_dir, end, end_dir, gap, full, head):
+def _auto_join(start, start_dir, end, end_dir, gap, full, head, prev_from):
     """The join the algorithm would make, expressed in the same shape a tuned
-    pair uses — so tuning always begins from what the app already does."""
+    pair uses — so tuning always begins from what the app already does. `from`
+    is the previous letter's `leadOut`, since that is the letter whose tail
+    this join cuts."""
     chord = math.hypot(end[0] - start[0], end[1] - start[1])
     h = chord / 3
     return {
-        "from": 1.0,
+        "from": prev_from,
         "to": round(head / max(1, len(full) - 1), 4),
         "dx": round(gap, 2),
         "h1": [round(start_dir[0] * h, 2), round(start_dir[1] * h, 2)],

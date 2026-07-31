@@ -72,17 +72,22 @@ Constants: `GLYPH_SCALE = 2.2`, `SPACE_WIDTH = 30` (unit coords). How letters co
 
 Every glyph in the dataset **enters at the baseline** (`y ≈ 70`, heading up at roughly -75°) and **exits at mid height** (`y ≈ 51`, heading up-right at roughly -63°). Drawing both as-is means each letter's lead-out and the next letter's lead-in are *the same connecting stroke drawn twice*: the pen climbs to mid height, about-faces 135–214° to dive back to the baseline, then about-faces again to climb out. Two cusps and a retrace at every join.
 
-The fix is to drop the duplicate. For every letter after the first in a word:
+The fix is to drop the duplicate — **both halves of it**. Every letter hands over to the next at one fixed height, `HANDOVER_Y = 51`, and the connecting stroke is drawn exactly once. For every letter in a word:
 
-1. **Trim the lead-in.** Discard leading points until the path first rises to the height the *previous letter actually exited at*, clamped to the band between the x-height and the baseline. That is 3–29% of a lowercase glyph (median 9%) — the rise from the baseline and nothing else. What remains starts at the height the previous letter left off, already travelling up and to the right. The clamp exists for the capitals, whose exits run from `y = 5` to `y = 72`; without it, a letter following a capital that exits up near the ascender would have its whole opening stroke trimmed away.
-2. **Place by the exit, not by `advanceWidth`.** The letter is offset so its trimmed start sits `join.gap` to the right of the previous letter's last point. The connecting stroke sets the spacing, the way it does by hand, and letters can no longer collide — several glyphs' exits (`m` reaches `x = 88` against an advance of 53) used to overshoot well into the next letter's slot.
-3. **Bridge with one cubic**, leaving along the previous letter's final direction and arriving along the trimmed letter's opening direction, both measured from the sampled points rather than the bezier control points so the trim is accounted for.
+1. **Trim the lead-in**, unless it starts the word — you do start a word from the baseline. Discard leading points until the path first rises to the handover height. That is 3–29% of a lowercase glyph (median 9%): the rise from the baseline and nothing else. Glyphs that already start at or above that height, which is most capitals and the period, lose nothing.
+2. **Cut the lead-out**, unless it ends the word — you do finish the last letter. The tail is cut at the glyph's own `leadOut`, dropping the closing rise back up to the handover height. That is 9–31 units of a lowercase glyph; `o`, `v` and `w` exit high enough that there is little or nothing to drop.
+3. **Place by the cut, not by `advanceWidth`.** The letter is offset so its trimmed start sits `join.gap` to the right of the previous letter's cut. The connecting stroke sets the spacing, the way it does by hand, and letters can no longer collide — several glyphs' exits (`m` reaches `x = 88` against an advance of 53) used to overshoot well into the next letter's slot.
+4. **Bridge with one cubic**, leaving along the previous letter's final direction and arriving along the trimmed letter's opening direction, both measured from the sampled points rather than the bezier control points so the cuts are accounted for.
 
-Measured across `gentle`, `many`, `ease`, `whole`, `breath`, `again`, `safe`: joins step ≤ 2 units vertically (was 17–19), turn 53–79° (was 135–214°), and backtrack at most 0.6 units — only after `s`, the one glyph whose exit leans down-left. The 180° reversals that remain in a phrase are inside letterforms: `a`, `i`, `o` and `q` reverse at the top of their bowls when composed entirely alone.
+Steps 1 and 2 are mirror images, and between them the run-up between two letters belongs to neither letter: the bridge draws all of it.
 
-Trimming is skipped when a glyph already starts at or above the handover height, which covers most capitals and the period, and for the first letter of every word — you do start a word from the baseline.
+The 180° reversals that remain in a phrase are inside letterforms: `a`, `i`, `o` and `q` reverse at the top of their bowls when composed entirely alone.
 
-`src/join.json` holds the one tunable, `gap`. Both `composer.js` and `tool/glyphdata.py` read it, so the join editor's preview and the app agree by construction.
+**Where 51 comes from.** Two independent measurements. Across the 56 pairs that were hand-tuned before `leadOut` existed, the second letter's cut landed at `y = 50.0..52.2` for 24 of the 26 letters — a spread of one to two point spacings, which is the resolution the data can express at all. And Sacramento, checked directly: it has **no** OpenType joining features (`GSUB` carries `aalt frac liga ordn sups`, `GPOS` only `kern` — no `calt`, no `curs`), and instead bakes a fixed convention into every outline. Each lowercase glyph overhangs its advance by exactly 110 font units and ends that overhang at 46% of the x-height, which is `y = 51.6` here. A joining script font and a hand-tuned dataset agreed to within half a unit.
+
+`src/join.json` holds the one global tunable, `gap`. Both `composer.js` and `tool/glyphdata.py` read it, so the join editor's preview and the app agree by construction.
+
+Cutting the lead-out narrows words by 12–32% (median 21%) against keeping the whole tail, because each letter now starts from a cut that sits further left than its exit did. `gap ≈ 29` restores the old widths if that reads too tight; `13.24` is what the hand-tuned pairs used, and they were tuned with the tail already cut.
 
 #### Hand-tuned pairs
 
@@ -105,6 +110,8 @@ Vertical placement is not stored — both letters stay on the baseline, so the h
 The failure mode is a letter consumed from both sides: if `from` on one join falls before `to` on the other, nothing survives. `composer.js` clamps so at least one segment remains, and the test suite checks every stored pair against `xy`, `xyy` and `xxy` to catch it.
 
 Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1352 combinations before the file does anything.
+
+**`pairs.json` is now an exceptions file, and it should stay small.** It once held 56 pairs, tuned by hand before `leadOut` existed. Grouping them showed the tuning was per-letter, not per-pair: `to` landed at the handover height for every second letter, `dx` was left at the default in 42 of the 56, and `h2` sat a median 1.48 units from the automatic tangent. Only `from` carried real information, and it clustered by *first* letter — `a` 0.849–0.882, `b` 0.915–0.949, `c` 0.814–0.845. That is what `leadOut` stores. Recomposing each pair with and without its entry left 43 of the 56 differing by under 3 units against a 7.3-unit stroke width, so they were dropped. The 13 that remain are `a` before a round or narrow letter (`aa ac ad ae ag ai aj ak al am an ao`) plus `be` — the pairs where `dx` was pulled down to 4–6 against a `gap` of 13.24, which no per-letter number can express.
 
 **`advanceWidth` is no longer used for layout.** It survives in `glyphs.json` and as a guide in the glyph editor, but changing it will not move anything on screen.
 
@@ -158,7 +165,9 @@ What this does not cover, and the README says so plainly: the server that hands 
 
 ## Glyph data and the editors
 
-`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `T`, `i`, `j` and `t` have a second, deferred one.
+`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, leadOut, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `T`, `i`, `j` and `t` have a second, deferred one. `leadOut` is where the main stroke is cut when another letter follows, 0–1 along it; `1` keeps the whole tail, which is where the period and the twelve capitals `D F G I O P Q T U V W Y` end up — they either do not exit at the handover height, or they sweep right and come back before exiting, so cutting the tail would put the next letter on top of ink they already laid down.
+
+`suggest_lead_out` seeds the value, and it has to tolerate a stroke whose last bezier overshoots its own end point: `s` comes back down and to the left over its final sample, which was enough to stop the walk-back on its first step and leave `s` uncut with its marker stranded at mid-height. Up to `OVERSHOOT_SAMPLES` trailing samples are skipped before the walk begins — bounded, because `O`, `U` and the period genuinely end on a descent and would otherwise be walked back through half the letterform.
 
 The file is written one bezier per line so hand edits show up as readable diffs. `tool/test_glyphdata.py` asserts that loading and saving an untouched file is byte-identical, so opening an editor never churns the diff.
 
@@ -174,9 +183,13 @@ Both import `tool/glyphdata.py`, which owns the file loading and saving, the bez
 
 ### `glyph_editor.py` — letterforms
 
-Drag red anchors and blue handles; add, delete, disconnect and snap-merge anchors; pan with right-drag and zoom with the wheel. The Sacramento overlay renders the vendored font beneath the paths, normalised to the same baseline and x-height, as a visual reference — stroke order stays deliberate and hand-authored rather than inferred from a font outline.
+Drag red anchors and blue handles; add, delete, disconnect and snap-merge anchors; pan with right-drag and zoom with the wheel. The Sacramento overlay renders the vendored font beneath the paths as a visual reference — stroke order stays deliberate and hand-authored rather than inferred from a font outline.
+
+The overlay is normalised on the baseline, and on **x-height for lowercase, cap height for capitals**. Sacramento is a script face with flamboyant capitals: cap height 1550 against an x-height of 627, a ratio of 2.47 where a text face sits near 1.4. Normalising everything on the x-height put a capital 99 units above the baseline — 39 past the ascender guide — so the reference had to be shrunk by eye before it was any use. On cap height it lands within 3 units of the ascender guide, where this dataset's own capitals already sit.
 
 Stroke 1 is the joinable one; every stroke after it is a second pass, drawn after the word is finished and begun with a tap. `+ Stroke` appends one, `Make main` promotes the selected stroke to first. `Make main` is what capital `T` needed: its stroke 1 was the crossbar rather than the stem, which is why there appeared to be no way to add a second stroke to it.
+
+One orange marker on stroke 1 sets the glyph's `leadOut` — drag it along the path, searched locally so it cannot jump across a letter where the path loops back over itself, as `o` and `p` do. Grey dashed shows the tail it gives up, which the bridge to the next letter draws instead. This is a letterform decision, not a connection one: it is a property of the single letter, so it lives here rather than in the join editor.
 
 ### `join_editor.py` — connections
 
@@ -194,7 +207,7 @@ Geometry otherwise matches the app exactly. It briefly did not: `composePhrase` 
 
 A pair is stored only once it differs from the automatic join, so `pairs.json` stays a record of decisions rather than of defaults, and `Reset` drops one back to automatic. The global `Join gap` lives here too, since it is the same kind of decision.
 
-**Tune the glyphs before the pairs.** A pair is tuned against a glyph's current shape, so reshaping a letter afterwards invalidates every pair that uses it — up to 52 of them for a letter used in both cases.
+**Tune the glyphs before the pairs.** A pair is tuned against a glyph's current shape, so reshaping a letter afterwards invalidates every pair that uses it — up to 52 of them for a letter used in both cases. Set its `leadOut` first too, for the same reason and in the same tool: one number per letter decides 26 joins, so it is worth getting right before tuning any pair by hand.
 
 Glyph work is **visual and subjective**. Expect a "longer descender on g, smoother c entry" feedback loop; `glyphs.json` is the only file that needs to change for it.
 

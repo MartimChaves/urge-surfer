@@ -9,13 +9,17 @@ from tool.glyphdata import (
     APP_GLYPH_SCALE,
     APP_LINE_WIDTH,
     GLYPHS_FILE,
+    HANDOVER_Y,
     REPO,
+    _sample_stroke,
     compose_run,
+    cut_index,
     dump_glyphs,
     load_glyphs,
     load_join,
     load_pairs,
     load_sacramento_reference,
+    suggest_lead_out,
 )
 
 def _modern_node():
@@ -34,11 +38,71 @@ class GlyphFileTest(unittest.TestCase):
         self.assertEqual(dump_glyphs(load_glyphs()), GLYPHS_FILE.read_text())
 
     def test_every_glyph_has_an_advance_width_and_strokes(self):
-        for key, (advance, strokes) in load_glyphs().items():
+        for key, (advance, strokes, lead_out) in load_glyphs().items():
             self.assertGreater(advance, 0, key)
             self.assertTrue(strokes, key)
+            self.assertTrue(0 < lead_out <= 1, f"{key} leadOut {lead_out}")
             for bezier in strokes[0]:
                 self.assertEqual(len(bezier), 4, key)
+
+
+class LeadOutTest(unittest.TestCase):
+    """`leadOut` replaced per-pair `from` tuning: one number per letter saying
+    where its tail stops when something follows it."""
+
+    def test_a_letter_only_gives_up_its_tail_when_something_follows(self):
+        # You do finish the last letter of a word.
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        alone = compose_run(glyphs, ["a"], gap)[0]
+        followed = compose_run(glyphs, ["a", "n"], gap)[0]
+
+        self.assertEqual(alone["tail"], alone["sample_count"] - 1)
+        self.assertLess(followed["tail"], alone["tail"])
+
+    def test_the_cut_never_consumes_a_letter(self):
+        # Both ends are cut against the same untrimmed stroke, so a letter
+        # trimmed at the head and cut at the tail has to keep a middle.
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        for key in glyphs:
+            run = compose_run(glyphs, ["n", key, "n"], gap)
+            self.assertGreaterEqual(len(run[1]["points"]), 2, key)
+
+    def test_letters_that_do_not_exit_at_the_handover_keep_their_tail(self):
+        # Most capitals end in letterform, not in a run-up to the next letter;
+        # cutting those back to the baseline takes the letter with it.
+        glyphs = load_glyphs()
+        for key in ("D", "T", "V", "W"):
+            points = _sample_stroke(glyphs[key][1][0])
+            self.assertEqual(suggest_lead_out(points), 1.0, key)
+
+    def test_the_cut_stays_the_rightmost_point_of_what_survives(self):
+        # The next letter is placed relative to the cut, so ink to the right of
+        # it would get overwritten. F, Y, D and I fail this on their own
+        # letterforms — their main stroke ends left of where it has already
+        # reached — and cutting cannot help them; they keep their whole tail.
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        known = {"F", "Y", "D", "I"}
+        for key in glyphs:
+            run = compose_run(glyphs, [key, "n"], gap)
+            if len(run) < 2:
+                continue
+            overlap = (max(x for x, _ in run[0]["points"])
+                       - min(x for x, _ in run[1]["points"]))
+            if key in known:
+                self.assertEqual(glyphs[key][2], 1.0, key)
+            else:
+                self.assertLess(overlap, 1.2, f"{key} overlaps the next letter")
+
+    def test_every_lowercase_lead_out_ends_near_the_baseline(self):
+        # The tail that gets cut is the rise from the baseline to the handover
+        # height. `o v w` exit high enough that there is little or none. `s`
+        # belongs here despite its last bezier overshooting its own end point —
+        # that one sample used to stop the walk-back dead and leave it at 1.0.
+        glyphs = load_glyphs()
+        for key in "abcdefghijklmnpqrstuxyz":
+            points = _sample_stroke(glyphs[key][1][0])
+            cut = points[cut_index(points, glyphs[key][2])]
+            self.assertGreater(cut[1], 55, f"{key} cuts at y={cut[1]:.1f}")
 
 
 class JoinMatchesTheAppTest(unittest.TestCase):
@@ -107,6 +171,14 @@ class SacramentoReferenceTest(unittest.TestCase):
 
         self.assertLess(left, 0)
 
+    def test_capitals_are_matched_on_cap_height_not_x_height(self):
+        # Sacramento's cap/x ratio is 2.47 against 1.4 for a text face, so on
+        # x-height a capital lands 99 units up — 39 past the ascender guide —
+        # and has to be shrunk by eye. On cap height it lands on the guide.
+        for key in "ABEFMST":
+            _, (_, top, _, _) = load_sacramento_reference(key)
+            self.assertAlmostEqual(top, 0, delta=6, msg=f"{key} top {top:.1f}")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -128,6 +200,42 @@ class EditorsTest(unittest.TestCase):
             [n for n in dir(join_editor.JoinEditor) if "anchor" in n or "bezier" in n],
             "join editor should not edit letterforms",
         )
+
+    def test_no_editor_method_reads_a_name_that_does_not_exist(self):
+        """Both editors are tkinter apps, so a method nobody can call headlessly
+        can sit broken indefinitely: `_bezier_polyline_points` used
+        `SAMPLES_PER_CURVE` and `cubic_at` without importing either, and add-
+        anchor raised `NameError` on the first click for as long as that lasted.
+        Importing the module does not catch it — the name is only resolved when
+        the line runs — so check the bytecode instead."""
+        import builtins
+        import dis
+        import types
+
+        from tool import glyph_editor, join_editor
+
+        def defined_here(obj, path):
+            if isinstance(obj, (staticmethod, classmethod)):
+                obj = obj.__func__
+            if isinstance(obj, types.FunctionType) and obj.__code__.co_filename == path:
+                yield obj.__qualname__, obj.__code__
+            elif isinstance(obj, type):
+                for value in vars(obj).values():
+                    yield from defined_here(value, path)
+
+        for module in (glyph_editor, join_editor):
+            known = set(vars(module)) | set(dir(builtins))
+            for value in vars(module).values():
+                for qualname, code in defined_here(value, module.__file__):
+                    for instruction in dis.get_instructions(code):
+                        if instruction.opname != "LOAD_GLOBAL":
+                            continue
+                        # assertIn would dump the whole namespace on failure.
+                        self.assertTrue(
+                            instruction.argval in known,
+                            f"{module.__name__}.{qualname} reads undefined "
+                            f"'{instruction.argval}'",
+                        )
 
     def test_pair_sequence_covers_every_tunable_combination(self):
         from tool.join_editor import pair_sequence
@@ -159,4 +267,8 @@ class AppRenderingConstantsTest(unittest.TestCase):
         self.assertEqual(
             APP_LINE_WIDTH,
             self._constant("canvas.js", r"LINE_WIDTH\s*=\s*([\d.]+)"),
+        )
+        self.assertEqual(
+            HANDOVER_Y,
+            self._constant("composer.js", r"HANDOVER_Y\s*=\s*([\d.]+)"),
         )
