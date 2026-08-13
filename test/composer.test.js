@@ -7,6 +7,7 @@ import pairs from '../src/pairs.json' with { type: 'json' };
 import { phrases } from '../src/phrases.js';
 
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz';
+const LIFTERS = Object.keys(glyphs).filter((key) => glyphs[key].liftAfter);
 const ADVANCE_THRESHOLD = 8 * GLYPH_SCALE;
 const POINT_SPACING = 2;
 const gap = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
@@ -72,6 +73,29 @@ test('trimming a lead-in never eats the letter', () => {
     const joined = composePhrase(`o${character}`);
     const kept = joined.letterEnd[1] - joined.letterStart[1];
     assert.ok(kept > alone * 0.5, `"${character}" lost over half its path to trimming`);
+  }
+});
+
+test('a letter marked liftAfter neither cuts nor is cut', () => {
+  const length = (path, i) => path.letterEnd[i] - path.letterStart[i] + 1;
+  for (const key of LIFTERS) {
+    const pair = composePhrase(`${key}a`);
+    assert.equal(length(pair, 0), length(composePhrase(key), 0), `${key} lost its tail`);
+    assert.equal(length(pair, 1), length(composePhrase('a'), 0), `a lost its lead-in after ${key}`);
+    // A stroke boundary exactly at the second letter is the whole of the join:
+    // no bridge was drawn, so nothing sits between the two letters. (Later
+    // entries are the deferred crossbars of F and T, which come after both.)
+    assert.ok(pair.strokeStart.includes(pair.letterStart[1]), `${key} bridged anyway`);
+  }
+});
+
+test('the letter after a lift clears the ink, not just the exit point', () => {
+  // F exits at x = -25.8 having already reached x = 40, so placing the next
+  // letter against the exit point drops it inside the F.
+  const xs = (path, i) => path.points.slice(path.letterStart[i], path.letterEnd[i] + 1).map((p) => p.x);
+  for (const key of LIFTERS) {
+    const path = composePhrase(`${key}a`);
+    assert.ok(Math.min(...xs(path, 1)) > Math.max(...xs(path, 0)), `a overlaps ${key}`);
   }
 });
 

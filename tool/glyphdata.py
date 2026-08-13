@@ -65,15 +65,31 @@ REFERENCE_LINES = [
 
 
 def load_glyphs(path=GLYPHS_FILE):
-    """Read `glyphs.json` into `{key: [advance_width, strokes, lead_out]}`,
-    where `strokes` is a list of beziers and each bezier is a list of four
-    mutable `[x, y]` control points. `lead_out` is where the letter's tail is
-    cut when something follows it; 1.0 keeps the whole stroke."""
+    """Read `glyphs.json` into
+    `{key: [advance_width, strokes, lead_out, lift_after]}`, where `strokes` is
+    a list of beziers and each bezier is a list of four mutable `[x, y]` control
+    points. `lead_out` is where the letter's tail is cut when something follows
+    it; 1.0 keeps the whole stroke. `lift_after` means the letter does not hand
+    over at all, and `join_from_second` that it hands over from its second
+    stroke rather than its first — see `compose_run`."""
     raw = json.loads(path.read_text())
     return {
-        key: [glyph["advanceWidth"], glyph["strokes"], glyph.get("leadOut", 1.0)]
+        key: [
+            glyph["advanceWidth"],
+            glyph["strokes"],
+            glyph.get("leadOut", 1.0),
+            glyph.get("liftAfter", False),
+            glyph.get("joinFromSecondStroke", False),
+        ]
         for key, glyph in raw.items()
     }
+
+
+def join_stroke(glyph):
+    """Which of a glyph's strokes hands over to the next letter. Everything
+    before it is drawn first, as the letterform requires; everything after it is
+    a second pass, drawn once the word is finished."""
+    return 1 if glyph[4] else 0
 
 
 def dump_glyphs(glyphs):
@@ -87,7 +103,7 @@ def dump_glyphs(glyphs):
 
     entries = []
     for key in sorted(glyphs):
-        adv, strokes, lead_out = glyphs[key]
+        adv, strokes, lead_out, lift_after, join_from_second = glyphs[key]
         strokes_text = ",\n".join(
             "      [\n"
             + ",\n".join(f"        {bezier(bez)}" for bez in stroke)
@@ -98,7 +114,9 @@ def dump_glyphs(glyphs):
             f"  {json.dumps(key)}: {{\n"
             f'    "advanceWidth": {num(adv)},\n'
             f'    "leadOut": {num(lead_out)},\n'
-            f'    "strokes": [\n{strokes_text}\n    ]\n'
+            + ('    "liftAfter": true,\n' if lift_after else "")
+            + ('    "joinFromSecondStroke": true,\n' if join_from_second else "")
+            + f'    "strokes": [\n{strokes_text}\n    ]\n'
             f"  }}"
         )
     return "{\n" + ",\n".join(entries) + "\n}\n"
@@ -370,55 +388,81 @@ def compose_run(glyphs, keys, gap, pairs=None):
     """Lay out `keys` as one joined run, the way `composePhrase` does.
 
     Yields a dict per key: `offset` (the x translation applied to the glyph),
-    `points` (its placed main stroke, cut at both ends by its joins), `trimmed`
-    (the opening the join discarded), `bridge` (the connecting curve in from
-    the previous letter) and `join` (the parameters that produced it, whether
-    hand-tuned or derived).
+    `points` (its placed joining stroke, cut at both ends by its joins), `lead`
+    (the stroke drawn before it, for a letter that joins from its second — K's
+    spine, drawn and then lifted from), `trimmed` (the opening the join
+    discarded), `bridge` (the connecting curve in from the previous letter) and
+    `join` (the parameters that produced it, whether hand-tuned or derived, or
+    None where the previous letter lifted the pen).
     """
     pairs = pairs or {}
-    joins = [pairs.get(keys[i] + keys[i + 1]) for i in range(len(keys) - 1)]
+    # A letter marked `liftAfter` hands over to nothing, so the pair it opens is
+    # not a join at all and any tuning stored for it is ignored.
+    joins = [None if glyphs[keys[i]][3] else pairs.get(keys[i] + keys[i + 1])
+             for i in range(len(keys) - 1)]
     run = []
     exit_point = exit_dir = None
+    lifted = False      # the letter before this one lifted the pen after itself
+    prev_right = 0.0
     prev_from = 1.0
     for i, key in enumerate(keys):
         strokes = glyphs[key][1]
-        full = _sample_stroke(strokes[0]) if strokes else []
+        joining = join_stroke(glyphs[key])
+        full = _sample_stroke(strokes[joining]) if len(strokes) > joining else []
         if len(full) < 2:
             continue
+        # The letter opens with whatever it draws first, and hands over from its
+        # joining stroke; for most letters those are the same stroke.
+        lead = _sample_stroke(strokes[0]) if joining else []
+        opener = lead or full
         into = joins[i - 1] if i > 0 else None
         out_of = joins[i] if i < len(joins) else None
 
         if into:
-            head = cut_index(full, into["to"])
-        elif exit_point:
-            head = lead_in_length(full)
+            head = cut_index(opener, into["to"])
+        elif exit_point and not lifted:
+            head = lead_in_length(opener)
         else:
             head = 0
         if out_of:
             tail = cut_index(full, out_of["from"])
-        elif i < len(keys) - 1:
+        elif i < len(keys) - 1 and not glyphs[key][3]:
             tail = cut_index(full, glyphs[key][2])
         else:
             tail = len(full) - 1
-        points, trimmed = full[head:max(tail, head + 1) + 1], full[:head + 1]
+        if lead:
+            lead, points = lead[head:], full[:tail + 1]
+        else:
+            points = full[head:max(tail, head + 1) + 1]
+        trimmed = opener[:head + 1]
 
-        offset = (exit_point[0] + (into["dx"] if into else gap) - points[0][0]
-                  if exit_point else 0.0)
+        if not exit_point:
+            offset = 0.0
+        elif lifted:
+            # Nothing was cut, so there is no cut to place against — and these
+            # letters' exits are not their rightmost ink. Measure from the ink.
+            offset = prev_right + gap - min(x for x, _ in lead + points)
+        else:
+            first = (lead or points)[0]
+            offset = exit_point[0] + (into["dx"] if into else gap) - first[0]
         shift = lambda pts: [(x + offset, y) for x, y in pts]
-        points, trimmed = shift(points), shift(trimmed)
+        lead, points, trimmed = shift(lead), shift(points), shift(trimmed)
 
         bridge, used = [], None
-        if exit_point:
-            entry_dir = _direction(points[0], points[1])
-            used = into or _auto_join(exit_point, exit_dir, points[0], entry_dir,
-                                      gap, full, head, prev_from)
-            bridge = _bridge_from(exit_point, points[0], used)
+        if exit_point and not lifted:
+            opening = lead or points
+            entry_dir = _direction(opening[0], opening[1])
+            used = into or _auto_join(exit_point, exit_dir, opening[0], entry_dir,
+                                      gap, opener, head, prev_from)
+            bridge = _bridge_from(exit_point, opening[0], used)
         run.append({
-            "key": key, "offset": offset, "points": points,
+            "key": key, "offset": offset, "points": points, "lead": lead,
             "trimmed": trimmed, "bridge": bridge, "join": used,
             "head": head, "tail": tail, "sample_count": len(full),
         })
         exit_point, exit_dir = points[-1], _direction(points[-2], points[-1])
+        lifted = bool(glyphs[key][3])
+        prev_right = max(x for x, _ in lead + points)
         prev_from = round(tail / max(1, len(full) - 1), 4)
     return run
 
@@ -458,6 +502,6 @@ def compose_around(glyphs, keys, index, gap, pairs=None):
     shift = -run[index]["offset"]
     for item in run:
         item["offset"] += shift
-        for field in ("points", "trimmed", "bridge"):
+        for field in ("points", "lead", "trimmed", "bridge"):
             item[field] = [(x + shift, y) for x, y in item[field]]
     return run

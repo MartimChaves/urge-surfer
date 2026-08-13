@@ -67,8 +67,12 @@ VERTICAL_CROP = 1.5
 def pair_sequence():
     """Every pair worth tuning: lowercase then capitals, each followed by a
     lowercase letter. Capitals only ever start a word, so nothing follows a
-    lowercase letter into a capital."""
-    return [first + second for first in LOWER + UPPER for second in LOWER]
+    lowercase letter into a capital, and a capital marked `liftAfter` opens no
+    join at all — there is no connection between it and what follows to tune."""
+    lifts = {key for key, glyph in load_glyphs().items() if glyph[3]}
+    return [first + second
+            for first in LOWER + UPPER if first not in lifts
+            for second in LOWER]
 
 
 class JoinEditor:

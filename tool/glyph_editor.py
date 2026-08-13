@@ -49,8 +49,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tool.glyphdata import (  # noqa: E402
     ANCHOR_EPS, DEFAULT_MARGIN_X, DEFAULT_MARGIN_Y, DEFAULT_SCALE, GLYPHS_FILE,
     HIT_R, REFERENCE_LINES, SACRAMENTO_FONT, SAMPLES_PER_CURVE, SNAP_RADIUS,
-    ZOOM_FACTOR, _sample_stroke, cubic_at, cut_index, dump_glyphs, load_glyphs,
-    load_sacramento_reference, reverse_bezier_list, sample_cubic, split_cubic,
+    ZOOM_FACTOR, _sample_stroke, cubic_at, cut_index, dump_glyphs, join_stroke,
+    load_glyphs, load_sacramento_reference, reverse_bezier_list, sample_cubic,
+    split_cubic,
 )
 
 try:
@@ -123,13 +124,15 @@ class GlyphEditor:
         self.drag_state = None  # dict | None
 
         self._build_ui()
+        self._sync_flags()
         self._redraw()
         self._update_status()
 
     @staticmethod
     def _deep_copy_glyph(glyph):
-        adv, strokes, lead_out = glyph
-        return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes], lead_out]
+        adv, strokes, lead_out, lift_after = glyph
+        return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes],
+                lead_out, lift_after]
 
     @classmethod
     def _deep_copy(cls, glyphs):
@@ -162,6 +165,19 @@ class GlyphEditor:
         ).pack(side="left", padx=(12, 2))
         tk.Button(
             toolbar, text="Make main", command=self._make_main_stroke
+        ).pack(side="left", padx=2)
+
+        self.lift_after_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            toolbar, text="Lift after",
+            variable=self.lift_after_var,
+            command=self._on_lift_after_toggle,
+        ).pack(side="left", padx=(12, 2))
+        self.join_second_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            toolbar, text="Join from stroke 2",
+            variable=self.join_second_var,
+            command=self._on_join_second_toggle,
         ).pack(side="left", padx=2)
 
         self.translate_var = tk.BooleanVar(value=False)
@@ -222,8 +238,43 @@ class GlyphEditor:
         self.current_key = self.picker.get()
         self.selected = None
         self.drag_state = None
+        self._sync_flags()
         self._redraw()
         self._update_status()
+
+    def _sync_flags(self):
+        """Point the two join checkboxes at the letter now being edited."""
+        glyph = self.glyphs_working[self.current_key]
+        self.lift_after_var.set(bool(glyph[3]))
+        self.join_second_var.set(bool(glyph[4]))
+
+    def _on_lift_after_toggle(self):
+        glyph = self.glyphs_working[self.current_key]
+        glyph[3] = self.lift_after_var.get()
+        self._redraw()
+        self._status(
+            f"'{self.current_key}' lifts the pen after itself: the next letter is "
+            f"drawn whole, as a stroke of its own."
+            if glyph[3] else
+            f"'{self.current_key}' joins to the next letter again."
+        )
+
+    def _on_join_second_toggle(self):
+        """Which stroke carries on into the next letter. Capital K is one case:
+        the spine is drawn first, and it is the arms that join."""
+        glyph = self.glyphs_working[self.current_key]
+        if self.join_second_var.get() and len(glyph[1]) < 2:
+            self.join_second_var.set(False)
+            self._status(f"'{self.current_key}' only has one stroke to join from.")
+            return
+        glyph[4] = self.join_second_var.get()
+        self._redraw()
+        self._status(
+            f"'{self.current_key}' joins from stroke 2; stroke 1 is drawn first "
+            f"and lifted from."
+            if glyph[4] else
+            f"'{self.current_key}' joins from stroke 1 again."
+        )
 
     def _add_stroke(self):
         """Append a new stroke. Anything after the first is a second pass —
@@ -260,6 +311,7 @@ class GlyphEditor:
             self.glyphs_on_disk[self.current_key]
         )
         self.selected = None
+        self._sync_flags()
         self._redraw()
         self._status(f"Reset '{self.current_key}' to last-saved version.")
 
@@ -327,7 +379,9 @@ class GlyphEditor:
         beziers = all_strokes[s]
         pt = beziers[b][p]
         pname = ["P0", "P1", "P2", "P3"][p]
-        pass_note = "main" if s == 0 else "2nd pass"
+        joining = join_stroke(self.glyphs_working[self.current_key])
+        pass_note = ("joins" if s == joining
+                     else "drawn first" if s < joining else "2nd pass")
         if p in (0, 3):
             self._status(
                 f"{pname}  bezier {b + 1}, stroke {s + 1}/{len(all_strokes)} "
@@ -695,7 +749,7 @@ class GlyphEditor:
 
     def _redraw(self):
         self.canvas.delete("all")
-        adv, strokes, _lead_out = self.glyphs_working[self.current_key]
+        adv, strokes, _lead_out, _lift_after = self.glyphs_working[self.current_key]
         w = self.canvas.winfo_width() or 1100
         h = self.canvas.winfo_height() or 800
 
@@ -760,9 +814,12 @@ class GlyphEditor:
     # rather than once per letter; grey shows what is given up.
 
     def _lead_out_points(self):
-        """The main stroke, sampled the way the app samples it."""
-        strokes = self.glyphs_working[self.current_key][1]
-        return _sample_stroke(strokes[0]) if strokes and strokes[0] else []
+        """The joining stroke, sampled the way the app samples it — the cut
+        belongs to whichever stroke carries on into the next letter."""
+        glyph = self.glyphs_working[self.current_key]
+        s = join_stroke(glyph)
+        strokes = glyph[1]
+        return _sample_stroke(strokes[s]) if len(strokes) > s and strokes[s] else []
 
     def _draw_lead_out(self):
         points = self._lead_out_points()

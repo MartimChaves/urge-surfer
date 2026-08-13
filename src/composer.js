@@ -5,6 +5,8 @@
 // x-height top = 30. Each glyph is a list of strokes; a stroke is a list of
 // cubic beziers; a bezier is four [x, y] control points. Stroke 0 is the
 // joinable main stroke — later strokes (i/j dots, t crossbar) are pen lifts.
+// `joinFromSecondStroke` moves the join one stroke along: K is drawn spine
+// first, and it is the arms that carry on into the next letter.
 import glyphs from './glyphs.json' with { type: 'json' };
 
 // Join tuning, shared with the glyph editor so its pair preview matches.
@@ -37,7 +39,8 @@ const SPACE_WIDTH = 30;
  * stroke is drawn once: each letter's opening rise from the baseline is
  * trimmed, each letter's closing rise is cut at its own `leadOut`, and the
  * bridge draws what is left. Both halves used to be kept, which is why a join
- * doubled back to the baseline and needed tuning per pair.
+ * doubled back to the baseline and needed tuning per pair. Letters marked
+ * `liftAfter` opt out of all of it — see `appendWord`.
  *
  * 51 was measured two ways. Across 56 hand-tuned pairs the second letter's cut
  * landed at y = 50.0..52.2 for 24 of the 26 letters — a spread of one to two
@@ -58,8 +61,8 @@ const HANDOVER_Y = 51;
  *   letterEnd     index into `points` where each letter ends (inclusive)
  *   letterCenterX world-space horizontal center of each letter
  *
- * Each word is one stroke, so `points` jumps in absolute coords at every
- * stroke boundary — renderers must `moveTo` there rather than `lineTo`.
+ * `points` jumps in absolute coords at every stroke boundary — renderers must
+ * `moveTo` there rather than `lineTo`.
  *
  * Throws if any character has no glyph.
  */
@@ -87,6 +90,19 @@ export function composePhrase(phrase, scale = GLYPH_SCALE) {
  * (each letter's main stroke, joined into one continuous stroke), then back
  * over it to dot the i's and cross the t's — each of those a separate stroke
  * the user must tap to begin.
+ *
+ * A letter marked `joinFromSecondStroke` puts one more stroke in the body pass.
+ * Capital K is drawn spine first, lifted from, and then carried on from the
+ * arms; only strokes after the joining one are deferred to the second pass.
+ *
+ * A letter marked `liftAfter` breaks the body pass in two. Those letters — the
+ * capitals whose stroke ends somewhere the next letter cannot be reached from,
+ * `D F I P T V W Y` — do not hand over: nothing is cut on either side of them,
+ * no bridge is drawn, and the next letter starts a stroke of its own, which is
+ * how they are written by hand. The next letter is then placed against the
+ * capital's rightmost ink rather than against its exit point, because for these
+ * letters those are not the same place: F exits at x = -25.8 having already
+ * reached x = 40, so placing by the exit drops the next letter on top of it.
  */
 function appendWord(word, scale, startX, path) {
   const characters = [...word];
@@ -94,43 +110,70 @@ function appendWord(word, scale, startX, path) {
     if (!glyphs[character]) throw new Error(`No cursive glyph for character: "${character}"`);
   }
   // Resolve every join up front: a hand-tuned pair cuts the tail of the letter
-  // *before* it, which has to be known before that letter is placed.
-  const joins = characters.slice(1).map((c, i) => pairs[characters[i] + c] ?? null);
+  // *before* it, which has to be known before that letter is placed. A letter
+  // marked `liftAfter` hands over to nothing, so the pair it opens is not a
+  // join at all and any tuning stored for it is ignored.
+  const joins = characters.slice(1).map((c, i) =>
+    (glyphs[characters[i]].liftAfter ? null : pairs[characters[i] + c] ?? null));
 
   const deferred = [];
   let exit = null;      // last point of the previous letter's ink
   let exitDir = null;   // and the direction it was travelling in
+  let lifted = false;   // the letter before this one lifted the pen after itself
+  let prevRight = 0;    // and how far right its ink reached
 
   for (let i = 0; i < characters.length; i++) {
-    const [main, ...rest] = glyphs[characters[i]].strokes;
+    const glyph = glyphs[characters[i]];
+    const joining = glyph.joinFromSecondStroke ? 1 : 0;
     const into = i > 0 ? joins[i - 1] : null;      // the join arriving here
     const outOf = joins[i] ?? null;                // the join leaving here
 
     // Cut both ends against the untrimmed stroke, so the two cuts cannot
-    // shift each other, then take the surviving middle.
-    const full = samplePoints(main, scale);
-    const head = into ? cutIndex(full, into.to)
-      : exit ? leadInLength(full, scale) : 0;
+    // shift each other, then take the surviving middle. The letter opens with
+    // whatever it draws first and hands over from its joining stroke; for most
+    // letters those are the same stroke.
+    const full = samplePoints(glyph.strokes[joining], scale);
+    let lead = joining ? samplePoints(glyph.strokes[0], scale) : null;
+    const opener = lead ?? full;
+    const liftsAfter = glyph.liftAfter ?? false;
+    const head = into ? cutIndex(opener, into.to)
+      : exit && !lifted ? leadInLength(opener, scale) : 0;
     const tail = outOf ? cutIndex(full, outOf.from)
-      : i < characters.length - 1 ? cutIndex(full, glyphs[characters[i]].leadOut ?? 1)
+      : i < characters.length - 1 && !liftsAfter
+        ? cutIndex(full, glyph.leadOut ?? 1)
         : full.length - 1;
-    let points = full.slice(head, Math.max(tail, head + 1) + 1);
+    let points = lead ? full.slice(0, tail + 1)
+      : full.slice(head, Math.max(tail, head + 1) + 1);
+    if (lead) lead = lead.slice(head);
 
-    // Place the letter so its opening cut lands where the join wants it.
-    const offset = exit
-      ? exit.x + (into ? into.dx : join.gap) * scale - points[0].x
-      : startX;
-    points = points.map((point) => ({ x: point.x + offset, y: point.y }));
+    // Place the letter so its opening cut lands where the join wants it — or,
+    // after a lift, where its own ink clears the previous letter's, since
+    // nothing was cut and those letters' exits are not their rightmost ink.
+    const ink = lead ? [...lead, ...points] : points;
+    const offset = !exit ? startX
+      : lifted ? prevRight + join.gap * scale - Math.min(...ink.map((p) => p.x))
+        : exit.x + (into ? into.dx : join.gap) * scale - ink[0].x;
+    const place = (from) => from.map((point) => ({ x: point.x + offset, y: point.y }));
+    points = place(points);
+    if (lead) lead = place(lead);
+    const opening = lead ?? points;
 
     path.letterStart.push(path.points.length);
-    if (exit) appendBridge(exit, points[0], into, exitDir, direction(points[0], points[1]), scale, path.points);
+    if (exit && lifted) path.strokeStart.push(path.points.length);
+    else if (exit) appendBridge(exit, opening[0], into, exitDir, direction(opening[0], opening[1]), scale, path.points);
+    if (lead) {
+      path.points.push(...lead);
+      path.strokeStart.push(path.points.length);   // the pen lift inside the letter
+    }
     path.points.push(...points);
     path.letterEnd.push(path.points.length - 1);
-    path.letterCenterX.push((points[0].x + points.at(-1).x) / 2);
+    path.letterCenterX.push((opening[0].x + points.at(-1).x) / 2);
 
-    for (const stroke of rest) deferred.push([offset, stroke]);
+    for (const stroke of glyph.strokes.slice(joining + 1)) deferred.push([offset, stroke]);
     exit = points.at(-1);
     exitDir = direction(points.at(-2), exit);
+    lifted = liftsAfter;
+    prevRight = Math.max(...(lead ? [...lead, ...points] : points).map((p) => p.x));
   }
 
   for (const [x, stroke] of deferred) {

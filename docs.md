@@ -64,7 +64,7 @@ Glyphs are authored in unit coordinates: `x ∈ [0, advanceWidth]` left to right
 - `letterStart` / `letterEnd` — inclusive point range per letter.
 - `letterCenterX` — world-space horizontal centre of each letter, midway between its first and last point. Used only to aim the camera.
 
-Composition is two passes per word, matching how cursive is actually written. Pass one walks the letters, sampling each glyph's `strokes[0]` and joining consecutive letters — this is the word body, one continuous stroke. Pass two emits every `strokes[1..]` (i/j dots, t and T crossbars) as separate strokes afterwards, so the user goes back to dot and cross. Each word is its own stroke; there are no bridging samples between words.
+Composition is two passes per word, matching how cursive is actually written. Pass one walks the letters, sampling each glyph's `strokes[0]` and joining consecutive letters — this is the word body, one continuous stroke unless a `liftAfter` letter breaks it. Pass two emits every `strokes[1..]` (i/j dots, t and T crossbars) as separate strokes afterwards, so the user goes back to dot and cross. There are no bridging samples between words.
 
 Constants: `GLYPH_SCALE = 2.2`, `SPACE_WIDTH = 30` (unit coords). How letters connect is tunable and lives in `src/join.json`.
 
@@ -80,6 +80,14 @@ The fix is to drop the duplicate — **both halves of it**. Every letter hands o
 4. **Bridge with one cubic**, leaving along the previous letter's final direction and arriving along the trimmed letter's opening direction, both measured from the sampled points rather than the bezier control points so the cuts are accounted for.
 
 Steps 1 and 2 are mirror images, and between them the run-up between two letters belongs to neither letter: the bridge draws all of it.
+
+#### Capitals that hand over to nothing
+
+Eight capitals — `D F I P T V W Y` — carry `liftAfter: true` and opt out of all four steps. Their main stroke ends somewhere the next letter cannot be reached from, so there is no handover to share: nothing is cut on either side of them, no bridge is drawn, and the next letter begins a stroke of its own, which is how they are written by hand. Any pair tuned for them in `pairs.json` is ignored, and the join editor does not offer those pairs at all.
+
+The flag has to sit on the **first** letter. It is not a property of the second one — `a` after `c` still wants its lead-in cut — and it cannot be derived from `leadOut: 1`: twelve capitals keep their whole tail, but `G O Q U` exit far enough right and low enough that the automatic join still reads, so they keep it.
+
+`liftAfter` also changes how the next letter is **placed**. Everywhere else a letter is offset from the previous letter's cut, but there is no cut here, and for these letters the exit is not the rightmost ink: `F` exits at `x = -25.8` having already reached `x = 40`, and `D` exits at `x = 31` with ink out to `44`. Placing by the exit dropped the next letter inside the capital. After a lift the offset is measured from the previous letter's rightmost ink instead, still `join.gap` wide.
 
 The 180° reversals that remain in a phrase are inside letterforms: `a`, `i`, `o` and `q` reverse at the top of their bowls when composed entirely alone.
 
@@ -109,7 +117,7 @@ Vertical placement is not stored — both letters stay on the baseline, so the h
 
 The failure mode is a letter consumed from both sides: if `from` on one join falls before `to` on the other, nothing survives. `composer.js` clamps so at least one segment remains, and the test suite checks every stored pair against `xy`, `xyy` and `xxy` to catch it.
 
-Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1352 combinations before the file does anything.
+Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1144 combinations before the file does anything.
 
 **`pairs.json` is now an exceptions file, and it should stay small.** It once held 56 pairs, tuned by hand before `leadOut` existed. Grouping them showed the tuning was per-letter, not per-pair: `to` landed at the handover height for every second letter, `dx` was left at the default in 42 of the 56, and `h2` sat a median 1.48 units from the automatic tangent. Only `from` carried real information, and it clustered by *first* letter — `a` 0.849–0.882, `b` 0.915–0.949, `c` 0.814–0.845. That is what `leadOut` stores. Recomposing each pair with and without its entry left 43 of the 56 differing by under 3 units against a 7.3-unit stroke width, so they were dropped. The 13 that remain are `a` before a round or narrow letter (`aa ac ad ae ag ai aj ak al am an ao`) plus `be` — the pairs where `dx` was pulled down to 4–6 against a `gap` of 13.24, which no per-letter number can express.
 
@@ -165,7 +173,7 @@ What this does not cover, and the README says so plainly: the server that hands 
 
 ## Glyph data and the editors
 
-`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, leadOut, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `T`, `i`, `j` and `t` have a second, deferred one. `leadOut` is where the main stroke is cut when another letter follows, 0–1 along it; `1` keeps the whole tail, which is where the period and the twelve capitals `D F G I O P Q T U V W Y` end up — they either do not exit at the handover height, or they sweep right and come back before exiting, so cutting the tail would put the next letter on top of ink they already laid down.
+`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, leadOut, liftAfter?, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `F`, `T`, `i`, `j` and `t` have a second, deferred one. `liftAfter` is written only when true, and only for the eight capitals that hand over to nothing. `leadOut` is where the main stroke is cut when another letter follows, 0–1 along it; `1` keeps the whole tail, which is where the period and the twelve capitals `D F G I O P Q T U V W Y` end up — they either do not exit at the handover height, or they sweep right and come back before exiting, so cutting the tail would put the next letter on top of ink they already laid down.
 
 `suggest_lead_out` seeds the value, and it has to tolerate a stroke whose last bezier overshoots its own end point: `s` comes back down and to the left over its final sample, which was enough to stop the walk-back on its first step and leave `s` uncut with its marker stranded at mid-height. Up to `OVERSHOOT_SAMPLES` trailing samples are skipped before the walk begins — bounded, because `O`, `U` and the period genuinely end on a descent and would otherwise be walked back through half the letterform.
 
@@ -193,7 +201,7 @@ One orange marker on stroke 1 sets the glyph's `leadOut` — drag it along the p
 
 ### `join_editor.py` — connections
 
-Type a pair or step through all 1352 with the arrow keys; "Untuned only" skips the ones already done. Two orange markers set where each letter is cut — drag them along their letter's path, searched locally so a cut cannot jump across a letter where the path loops back over itself. Two blue handles shape the bezier between the cuts. Dragging anywhere else kerns. Grey dashed shows what each letter gives up.
+Type a pair or step through all 1144 with the arrow keys; "Untuned only" skips the ones already done. The eight `liftAfter` capitals are left out of the sequence — they open no connection to tune. Two orange markers set where each letter is cut — drag them along their letter's path, searched locally so a cut cannot jump across a letter where the path loops back over itself. Two blue handles shape the bezier between the cuts. Dragging anywhere else kerns. Grey dashed shows what each letter gives up.
 
 The view frames each pair on its **join** rather than on the letters, letting tall glyphs crop — fitting `g` whole shrinks the connection to a few pixels, and the connection is the thing being edited.
 
@@ -213,8 +221,8 @@ Glyph work is **visual and subjective**. Expect a "longer descender on g, smooth
 
 ## Verification status
 
-- `node --test test/` — 17 tests, passing.
-- `python3 -m unittest tool.test_glyphdata` — 6 tests, passing (the composer cross-check needs node 20+ on `PATH`, and skips otherwise).
+- `node --test test/` — 21 tests, passing.
+- `python3 -m unittest tool.test_glyphdata` — 19 tests, passing (the composer cross-check needs node 20+ on `PATH`, and skips otherwise).
 - `bash tool/check_no_network.sh` — passing.
 - Manually driven in Chrome: full ritual flow, all four strokes of a phrase traced end to end, stroke gating, completion, camera settling, and rendering at both desktop and phone canvas widths.
 

@@ -38,7 +38,7 @@ class GlyphFileTest(unittest.TestCase):
         self.assertEqual(dump_glyphs(load_glyphs()), GLYPHS_FILE.read_text())
 
     def test_every_glyph_has_an_advance_width_and_strokes(self):
-        for key, (advance, strokes, lead_out) in load_glyphs().items():
+        for key, (advance, strokes, lead_out, _lift) in load_glyphs().items():
             self.assertGreater(advance, 0, key)
             self.assertTrue(strokes, key)
             self.assertTrue(0 < lead_out <= 1, f"{key} leadOut {lead_out}")
@@ -105,6 +105,37 @@ class LeadOutTest(unittest.TestCase):
             self.assertGreater(cut[1], 55, f"{key} cuts at y={cut[1]:.1f}")
 
 
+class LiftAfterTest(unittest.TestCase):
+    """`liftAfter` marks the capitals that hand over to nothing: the letter
+    after them is drawn whole, as a stroke of its own."""
+
+    def test_a_lifted_letter_neither_cuts_nor_is_cut(self):
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        for key in [k for k, glyph in glyphs.items() if glyph[3]]:
+            run = compose_run(glyphs, [key, "a"], gap)
+            self.assertEqual(run[0]["tail"], run[0]["sample_count"] - 1, key)
+            self.assertEqual(run[1]["head"], 0, key)
+            self.assertEqual(run[1]["bridge"], [], key)
+            self.assertIsNone(run[1]["join"], key)
+
+    def test_the_next_letter_clears_the_ink_rather_than_the_exit(self):
+        # F exits at x = -25.8 having already reached x = 40, so placing the
+        # next letter against the exit point drops it inside the F.
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        for key in [k for k, glyph in glyphs.items() if glyph[3]]:
+            run = compose_run(glyphs, [key, "a"], gap)
+            self.assertGreater(min(x for x, _ in run[1]["points"]),
+                               max(x for x, _ in run[0]["points"]), key)
+
+    def test_tuning_is_ignored_for_a_pair_that_does_not_connect(self):
+        glyphs, gap = load_glyphs(), load_join()["gap"]
+        key = next(k for k, glyph in glyphs.items() if glyph[3])
+        invented = {"from": 0.5, "to": 0.5, "dx": 40, "h1": [9, 9], "h2": [9, 9]}
+        plain = compose_run(glyphs, [key, "a"], gap)
+        tuned = compose_run(glyphs, [key, "a"], gap, {key + "a": invented})
+        self.assertEqual(plain[1]["points"], tuned[1]["points"])
+
+
 class JoinMatchesTheAppTest(unittest.TestCase):
     """The join editor previews pairs with this module's copy of the join, so
     it has to agree with `src/composer.js` or it shows the wrong thing."""
@@ -130,7 +161,8 @@ class JoinMatchesTheAppTest(unittest.TestCase):
         if not node:
             self.skipTest("needs node 20+ on PATH")
         words = ["gentle", "many", "ease", "whole", "is", "Begin",
-                 "cabbage", "balance", "accept"]   # exercise the tuned pairs
+                 "cabbage", "balance", "accept",   # exercise the tuned pairs
+                 "Dan", "Fun", "Pause"]            # and the letters that lift
         result = subprocess.run(
             [node, "--input-type=module", "--eval", self.SCRIPT, "--", *words],
             cwd=REPO, capture_output=True, text=True,
@@ -240,10 +272,13 @@ class EditorsTest(unittest.TestCase):
     def test_pair_sequence_covers_every_tunable_combination(self):
         from tool.join_editor import pair_sequence
 
-        sequence = pair_sequence()
-        self.assertEqual(len(sequence), 52 * 26)
-        self.assertEqual(len(set(sequence)), len(sequence))
         glyphs = load_glyphs()
+        # A letter that lifts the pen after itself opens no join to tune.
+        lifts = sum(1 for glyph in glyphs.values() if glyph[3])
+        sequence = pair_sequence()
+        self.assertEqual(len(sequence), (52 - lifts) * 26)
+        self.assertEqual(len(set(sequence)), len(sequence))
+        self.assertFalse([p for p in sequence if glyphs[p[0]][3]])
         for pair in sequence:
             self.assertIn(pair[0], glyphs)
             self.assertIn(pair[1], glyphs)
