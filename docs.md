@@ -83,17 +83,25 @@ Steps 1 and 2 are mirror images, and between them the run-up between two letters
 
 #### Capitals that hand over to nothing
 
-Eight capitals — `D F I P T V W Y` — carry `liftAfter: true` and opt out of all four steps. Their main stroke ends somewhere the next letter cannot be reached from, so there is no handover to share: nothing is cut on either side of them, no bridge is drawn, and the next letter begins a stroke of its own, which is how they are written by hand. Any pair tuned for them in `pairs.json` is ignored, and the join editor does not offer those pairs at all.
+Nine capitals — `B D F I P T V W Y` — carry `liftAfter: true` and opt out of all four steps. Their main stroke ends somewhere the next letter cannot be reached from, so there is no handover to share: nothing is cut on either side of them, no bridge is drawn, and the next letter begins a stroke of its own, which is how they are written by hand. Any pair tuned for them in `pairs.json` is ignored, and the join editor does not offer those pairs at all.
 
-The flag has to sit on the **first** letter. It is not a property of the second one — `a` after `c` still wants its lead-in cut — and it cannot be derived from `leadOut: 1`: twelve capitals keep their whole tail, but `G O Q U` exit far enough right and low enough that the automatic join still reads, so they keep it.
+The flag has to sit on the **first** letter. It is not a property of the second one — `a` after `c` still wants its lead-in cut — and it cannot be derived from `leadOut: 1`: thirteen capitals keep their whole tail, but `G O Q U` exit far enough right and low enough that the automatic join still reads, so they keep it.
 
-`liftAfter` also changes how the next letter is **placed**. Everywhere else a letter is offset from the previous letter's cut, but there is no cut here, and for these letters the exit is not the rightmost ink: `F` exits at `x = -25.8` having already reached `x = 40`, and `D` exits at `x = 31` with ink out to `44`. Placing by the exit dropped the next letter inside the capital. After a lift the offset is measured from the previous letter's rightmost ink instead, still `join.gap` wide.
+**The test for needing this is the shape, not the letter.** A stroke that ends left of ink it has already laid down cannot hand over, because the next letter is placed against the exit and would land on top of that ink. `B` was redrawn and joined the family: it sweeps right to `x = 46.4` and loops back to exit at `14.2`, dropping the next letter 18.1 units inside itself. Cutting the tail cannot help — `suggest_lead_out` walks forward looking for a cut that is the rightmost surviving point, finds none, and returns `1.0`. Lifting the pen is the fix, and it is how a capital `B` is written by hand anyway.
+
+`liftAfter` also changes how the next letter is **placed**. Everywhere else a letter is offset from the previous letter's cut, but there is no cut here, and for these letters the exit is not the rightmost ink: `F` exits at `x = -25.8` having already reached `x = 40`, and `D` exits at `x = 31` with ink out to `44`. Placing by the exit dropped the next letter inside the capital. After a lift the offset is measured from the previous letter's rightmost ink instead, and by `join.liftGap` rather than `join.gap`. The two are different distances: `gap` is the room a connecting stroke needs, and a lift draws no connecting stroke, so spending the full 13.24 there left a hole in the middle of the word. `liftGap = 6` puts the next letter 0.55 units of visible daylight away — the stroke is 5.45 units wide, so anything under that overlaps the ink rather than closing the gap.
+
+#### Letters that hand over from a later stroke
+
+`joinFromSecondStroke` moves the handover one stroke along, and only capital `K` carries it. `K` is drawn spine first, the pen lifts, and it is the arms that carry on into the next letter — so the stroke that joins is `strokes[1]`, while `strokes[0]` is drawn before it rather than deferred to the second pass. Everything after the joining stroke is still deferred.
+
+Without the flag `K` hands over from its spine, which ends at `x = -6.8` having already reached `19.7`, and the arms then reach `44.2` — so the next letter was drawn straight through them, overlapping by 50 units. The flag was plumbed through `composer.js`, `glyphdata.py` and both editors before it was set on any glyph, which is exactly how that went unnoticed: the machinery was all in place and dormant.
 
 The 180° reversals that remain in a phrase are inside letterforms: `a`, `i`, `o` and `q` reverse at the top of their bowls when composed entirely alone.
 
 **Where 51 comes from.** Two independent measurements. Across the 56 pairs that were hand-tuned before `leadOut` existed, the second letter's cut landed at `y = 50.0..52.2` for 24 of the 26 letters — a spread of one to two point spacings, which is the resolution the data can express at all. And Sacramento, checked directly: it has **no** OpenType joining features (`GSUB` carries `aalt frac liga ordn sups`, `GPOS` only `kern` — no `calt`, no `curs`), and instead bakes a fixed convention into every outline. Each lowercase glyph overhangs its advance by exactly 110 font units and ends that overhang at 46% of the x-height, which is `y = 51.6` here. A joining script font and a hand-tuned dataset agreed to within half a unit.
 
-`src/join.json` holds the one global tunable, `gap`. Both `composer.js` and `tool/glyphdata.py` read it, so the join editor's preview and the app agree by construction.
+`src/join.json` holds the two global tunables, `gap` and `liftGap`. Both `composer.js` and `tool/glyphdata.py` read them, so the join editor's preview and the app agree by construction. The editor's slider edits `gap`; `liftGap` is a file edit, and `glyphdata.py` reads it once at import.
 
 Cutting the lead-out narrows words by 12–32% (median 21%) against keeping the whole tail, because each letter now starts from a cut that sits further left than its exit did. `gap ≈ 29` restores the old widths if that reads too tight; `13.24` is what the hand-tuned pairs used, and they were tuned with the tail already cut.
 
@@ -117,7 +125,7 @@ Vertical placement is not stored — both letters stay on the baseline, so the h
 
 The failure mode is a letter consumed from both sides: if `from` on one join falls before `to` on the other, nothing survives. `composer.js` clamps so at least one segment remains, and the test suite checks every stored pair against `xy`, `xyy` and `xxy` to catch it.
 
-Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1144 combinations before the file does anything.
+Any pair not listed falls back to the automatic join, so partial tuning is useful immediately — there is no need to fill in all 1118 combinations before the file does anything.
 
 **`pairs.json` is now an exceptions file, and it should stay small.** It once held 56 pairs, tuned by hand before `leadOut` existed. Grouping them showed the tuning was per-letter, not per-pair: `to` landed at the handover height for every second letter, `dx` was left at the default in 42 of the 56, and `h2` sat a median 1.48 units from the automatic tangent. Only `from` carried real information, and it clustered by *first* letter — `a` 0.849–0.882, `b` 0.915–0.949, `c` 0.814–0.845. That is what `leadOut` stores. Recomposing each pair with and without its entry left 43 of the 56 differing by under 3 units against a 7.3-unit stroke width, so they were dropped. The 13 that remain are `a` before a round or narrow letter (`aa ac ad ae ag ai aj ak al am an ao`) plus `be` — the pairs where `dx` was pulled down to 4–6 against a `gap` of 13.24, which no per-letter number can express.
 
@@ -131,7 +139,7 @@ Sampling at even steps of `t` — what the Flutter version did — is not good e
 
 ### `tracer.js` — the pen
 
-The pen chases the finger at a constant `PEN_SPEED = 100` px/s. Moving the finger faster just leaves the pen trailing; that lag is the mechanic. `penSpeed = Infinity` turns it off (the "pen lag" toggle).
+The pen chases the finger at a constant `PEN_SPEED = 70` px/s. Moving the finger faster just leaves the pen trailing; that lag is the mechanic. `penSpeed = Infinity` turns it off (the "pen lag" toggle).
 
 Progress (`index`) advances only while the pen passes within `8 * GLYPH_SCALE` of the *next* point, one point at a time, and never decreases. Straying off the path, or racing ahead and stopping, leaves progress where the pen last actually passed — you have to go back. Progress cannot cross a stroke boundary; `advanceStroke()` teleports the pen to the next stroke's first point, and the canvas gates that on where the user touched.
 
@@ -175,7 +183,7 @@ What this does not cover, and the README says so plainly: the server that hands 
 
 ## Glyph data and the editors
 
-`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, leadOut, liftAfter?, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `F`, `T`, `i`, `j` and `t` have a second, deferred one. `liftAfter` is written only when true, and only for the eight capitals that hand over to nothing. `leadOut` is where the main stroke is cut when another letter follows, 0–1 along it; `1` keeps the whole tail, which is where the period and the twelve capitals `D F G I O P Q T U V W Y` end up — they either do not exit at the handover height, or they sweep right and come back before exiting, so cutting the tail would put the next letter on top of ink they already laid down.
+`src/glyphs.json` holds all 53 glyphs (`a–z`, `A–Z`, `.`) as `{advanceWidth, leadOut, liftAfter?, joinFromSecondStroke?, strokes}`, where a stroke is a list of cubic beziers and a bezier is four `[x, y]` control points. Stroke 0 is the joinable main stroke; `F`, `K`, `T`, `i`, `j` and `t` have a second one. `liftAfter` and `joinFromSecondStroke` are written only when true — the first for the nine capitals that hand over to nothing, the second only for `K`. `leadOut` is where the main stroke is cut when another letter follows, 0–1 along it; `1` keeps the whole tail, which is where the period and the thirteen capitals `B D F G I O P Q T U V W Y` end up — they either do not exit at the handover height, or they sweep right and come back before exiting, so cutting the tail would put the next letter on top of ink they already laid down.
 
 `suggest_lead_out` seeds the value, and it has to tolerate a stroke whose last bezier overshoots its own end point: `s` comes back down and to the left over its final sample, which was enough to stop the walk-back on its first step and leave `s` uncut with its marker stranded at mid-height. Up to `OVERSHOOT_SAMPLES` trailing samples are skipped before the walk begins — bounded, because `O`, `U` and the period genuinely end on a descent and would otherwise be walked back through half the letterform.
 
@@ -199,15 +207,17 @@ The overlay is normalised on the baseline, and on **x-height for lowercase, cap 
 
 Stroke 1 is the joinable one; every stroke after it is a second pass, drawn after the word is finished and begun with a tap. `+ Stroke` appends one, `Make main` promotes the selected stroke to first. `Make main` is what capital `T` needed: its stroke 1 was the crossbar rather than the stem, which is why there appeared to be no way to add a second stroke to it.
 
-One orange marker on stroke 1 sets the glyph's `leadOut` — drag it along the path, searched locally so it cannot jump across a letter where the path loops back over itself, as `o` and `p` do. Grey dashed shows the tail it gives up, which the bridge to the next letter draws instead. This is a letterform decision, not a connection one: it is a property of the single letter, so it lives here rather than in the join editor.
+One orange marker on stroke 1 sets the glyph's `leadOut` — drag it along the path, searched locally so it cannot jump across a letter where the path loops back over itself, as `o` and `p` do. Grey dashed shows the tail it gives up, which the bridge to the next letter draws instead.
+
+Two checkboxes carry the other two handover decisions: **Lift after** sets `liftAfter`, and **Hand over from stroke 2** sets `joinFromSecondStroke` (refused on a single-stroke letter). All three are letterform decisions, not connection ones: each is a property of the single letter, so they live here rather than in the join editor. `test_glyphdata.py` enforces that separation by name, which is why these are named for the handover rather than for the join — a `_on_join_…` method in this file reads as the glyph editor reaching into pair data and fails the check.
 
 ### `join_editor.py` — connections
 
-Type a pair or step through all 1144 with the arrow keys; "Untuned only" skips the ones already done. The eight `liftAfter` capitals are left out of the sequence — they open no connection to tune. Two orange markers set where each letter is cut — drag them along their letter's path, searched locally so a cut cannot jump across a letter where the path loops back over itself. Two blue handles shape the bezier between the cuts. Dragging anywhere else kerns. Grey dashed shows what each letter gives up.
+Type a pair or step through all 1118 with the arrow keys; "Untuned only" skips the ones already done. The nine `liftAfter` capitals are left out of the sequence — they open no connection to tune. Two orange markers set where each letter is cut — drag them along their letter's path, searched locally so a cut cannot jump across a letter where the path loops back over itself. Two blue handles shape the bezier between the cuts. Dragging anywhere else kerns. Grey dashed shows what each letter gives up.
 
 The view frames each pair on its **join** rather than on the letters, letting tall glyphs crop — fitting `g` whole shrinks the connection to a few pixels, and the connection is the thing being edited.
 
-**Real weight** strokes the preview at the width the app uses. The editor otherwise draws centrelines, which is what you want for placing handles and useless for judging how heavy a join reads: `LINE_WIDTH = 16` in `canvas.js` is 4.6% of a word's ink height, against roughly 0.5% for the editor's editing view. The two numbers it copies out of the app are mirrored in `glyphdata.py` and checked against `composer.js`/`canvas.js` by `tool/test_glyphdata.py`.
+**Real weight** strokes the preview at the width the app uses. The editor otherwise draws centrelines, which is what you want for placing handles and useless for judging how heavy a join reads: `LINE_WIDTH = 12` in `canvas.js` is 3.4% of a word's ink height, against roughly 0.5% for the editor's editing view. The two numbers it copies out of the app are mirrored in `glyphdata.py` and checked against `composer.js`/`canvas.js` by `tool/test_glyphdata.py`.
 
 Geometry otherwise matches the app exactly. It briefly did not: `composePhrase` used to shear the whole path 10° after joining, which the editor never showed, so a join tuned to look balanced arrived on screen leaning. The shear was removed rather than mirrored — what you draw in the editor is now what ships.
 

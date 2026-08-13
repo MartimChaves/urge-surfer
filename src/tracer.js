@@ -6,7 +6,7 @@
 import { GLYPH_SCALE } from './composer.js';
 
 /** Pixels per second the pen travels toward the finger. */
-export const PEN_SPEED = 100;
+export const PEN_SPEED = 70;
 
 /** How close the pen must come to the next path point to count as reaching
  *  it. Scaled alongside the glyphs so progress feels the same at any size. */

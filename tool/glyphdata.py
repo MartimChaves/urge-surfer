@@ -233,11 +233,19 @@ OVERSHOOT_SAMPLES = 2
 # src/canvas.js so the join editor can show what will actually appear on screen;
 # tool/test_glyphdata.py fails if these drift from the source they copy.
 APP_GLYPH_SCALE = 2.2
-APP_LINE_WIDTH = 16
+APP_LINE_WIDTH = 12
 
 
 def load_join(path=JOIN_FILE):
     return json.loads(path.read_text())
+
+
+# How close the next letter sits to a letter that lifted the pen. Its own
+# tunable rather than `gap`, and much smaller: `gap` is the room a connecting
+# stroke needs, and a lift draws no connecting stroke, so spending the full gap
+# there leaves a hole in the middle of the word. Read once — the join editor's
+# slider edits `gap`, not this.
+LIFT_GAP = load_join().get("liftGap", 0.0)
 
 
 def dump_join(join):
@@ -440,8 +448,10 @@ def compose_run(glyphs, keys, gap, pairs=None):
             offset = 0.0
         elif lifted:
             # Nothing was cut, so there is no cut to place against — and these
-            # letters' exits are not their rightmost ink. Measure from the ink.
-            offset = prev_right + gap - min(x for x, _ in lead + points)
+            # letters' exits are not their rightmost ink. Measure from the ink,
+            # and by LIFT_GAP: no connecting stroke is drawn here to make room
+            # for, so the full join gap would read as a hole.
+            offset = prev_right + LIFT_GAP - min(x for x, _ in lead + points)
         else:
             first = (lead or points)[0]
             offset = exit_point[0] + (into["dx"] if into else gap) - first[0]

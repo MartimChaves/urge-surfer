@@ -38,7 +38,7 @@ class GlyphFileTest(unittest.TestCase):
         self.assertEqual(dump_glyphs(load_glyphs()), GLYPHS_FILE.read_text())
 
     def test_every_glyph_has_an_advance_width_and_strokes(self):
-        for key, (advance, strokes, lead_out, _lift) in load_glyphs().items():
+        for key, (advance, strokes, lead_out, _lift, _second) in load_glyphs().items():
             self.assertGreater(advance, 0, key)
             self.assertTrue(strokes, key)
             self.assertTrue(0 < lead_out <= 1, f"{key} leadOut {lead_out}")
@@ -222,6 +222,9 @@ class EditorsTest(unittest.TestCase):
     and pair maths line up with the data."""
 
     def test_the_two_editors_import_and_stay_separate(self):
+        # A name check, so a letterform property that affects joining has to be
+        # named for the letter rather than for the connection: which stroke
+        # hands over is the glyph editor's business, the same way `leadOut` is.
         from tool import glyph_editor, join_editor
 
         self.assertFalse(

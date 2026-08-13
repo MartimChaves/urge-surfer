@@ -153,9 +153,12 @@ function appendWord(word, scale, startX, path) {
     // Place the letter so its opening cut lands where the join wants it — or,
     // after a lift, where its own ink clears the previous letter's, since
     // nothing was cut and those letters' exits are not their rightmost ink.
+    // A lift gets its own, much smaller gap: `join.gap` is the width of a
+    // connecting stroke, and there is no connecting stroke here to make room
+    // for, so spending it leaves a hole in the middle of the word.
     const ink = lead ? [...lead, ...points] : points;
     const offset = !exit ? startX
-      : lifted ? prevRight + join.gap * scale - Math.min(...ink.map((p) => p.x))
+      : lifted ? prevRight + join.liftGap * scale - Math.min(...ink.map((p) => p.x))
         : exit.x + (into ? into.dx : join.gap) * scale - ink[0].x;
     const place = (from) => from.map((point) => ({ x: point.x + offset, y: point.y }));
     points = place(points);

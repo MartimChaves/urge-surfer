@@ -173,11 +173,11 @@ class GlyphEditor:
             variable=self.lift_after_var,
             command=self._on_lift_after_toggle,
         ).pack(side="left", padx=(12, 2))
-        self.join_second_var = tk.BooleanVar(value=False)
+        self.handover_stroke_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            toolbar, text="Join from stroke 2",
-            variable=self.join_second_var,
-            command=self._on_join_second_toggle,
+            toolbar, text="Hand over from stroke 2",
+            variable=self.handover_stroke_var,
+            command=self._on_handover_stroke_toggle,
         ).pack(side="left", padx=2)
 
         self.translate_var = tk.BooleanVar(value=False)
@@ -243,10 +243,10 @@ class GlyphEditor:
         self._update_status()
 
     def _sync_flags(self):
-        """Point the two join checkboxes at the letter now being edited."""
+        """Point the two handover checkboxes at the letter now being edited."""
         glyph = self.glyphs_working[self.current_key]
         self.lift_after_var.set(bool(glyph[3]))
-        self.join_second_var.set(bool(glyph[4]))
+        self.handover_stroke_var.set(bool(glyph[4]))
 
     def _on_lift_after_toggle(self):
         glyph = self.glyphs_working[self.current_key]
@@ -259,21 +259,21 @@ class GlyphEditor:
             f"'{self.current_key}' joins to the next letter again."
         )
 
-    def _on_join_second_toggle(self):
+    def _on_handover_stroke_toggle(self):
         """Which stroke carries on into the next letter. Capital K is one case:
-        the spine is drawn first, and it is the arms that join."""
+        the spine is drawn first, and it is the arms that carry on."""
         glyph = self.glyphs_working[self.current_key]
-        if self.join_second_var.get() and len(glyph[1]) < 2:
-            self.join_second_var.set(False)
-            self._status(f"'{self.current_key}' only has one stroke to join from.")
+        if self.handover_stroke_var.get() and len(glyph[1]) < 2:
+            self.handover_stroke_var.set(False)
+            self._status(f"'{self.current_key}' only has one stroke to hand over from.")
             return
-        glyph[4] = self.join_second_var.get()
+        glyph[4] = self.handover_stroke_var.get()
         self._redraw()
         self._status(
-            f"'{self.current_key}' joins from stroke 2; stroke 1 is drawn first "
-            f"and lifted from."
+            f"'{self.current_key}' hands over from stroke 2; stroke 1 is drawn "
+            f"first and lifted from."
             if glyph[4] else
-            f"'{self.current_key}' joins from stroke 1 again."
+            f"'{self.current_key}' hands over from stroke 1 again."
         )
 
     def _add_stroke(self):

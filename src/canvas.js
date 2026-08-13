@@ -19,7 +19,10 @@ const CORNER_ANGLE = Math.PI / 2;
 /** How long the newly-active chevron stays engorged before easing back. */
 const CHEVRON_FLASH = 0.6;
 
-const LINE_WIDTH = 16;
+const LINE_WIDTH = 12;
+
+/** Radius of the dot that marks where the pen currently is. */
+const PEN_RADIUS = 7;
 
 export class TracingCanvas {
   constructor(canvas, phrase, onComplete) {
@@ -186,7 +189,7 @@ export class TracingCanvas {
     this.drawNextStrokeTarget();
 
     ctx.globalAlpha = 1;
-    dot(ctx, this.tracer.pen, 10);
+    dot(ctx, this.tracer.pen, PEN_RADIUS);
     if (this.finger) ring(ctx, this.finger, 6, 2);
   }
 
