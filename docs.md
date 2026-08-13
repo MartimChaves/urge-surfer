@@ -147,7 +147,7 @@ Owns the `requestAnimationFrame` loop, pointer events, the camera, and all paint
 - **Pointers.** Raw `pointerdown/move/up`, so a tap without a drag registers. On pointer-down, if the current stroke is complete, the touch must land within `NEXT_STROKE_GATE = 100` world units of `nextStrokePoint` or it is ignored entirely.
 - **Chevrons.** Each stroke is split into segments at its sharp corners (local turn angle ≥ 90° over a ±5-point window). One chevron marks the active segment, pointing along the local tangent; it pops to double size and full opacity on becoming active, then eases down over 0.6 s.
 - **Painting.** Ink colour comes from the canvas element's CSS `color`, so the light/dark theme drives it with no JS involvement. Opacity is `globalAlpha`: 0.25 for the template, 0.7 for the traced part.
-- **Sizing.** The canvas is sized by CSS; a `ResizeObserver` sets the backing store to `clientWidth × devicePixelRatio` and re-centres vertically. Wide screens simply show more of the phrase — the glyph scale does not change.
+- **Sizing.** The canvas is sized by CSS; a `ResizeObserver` sets the backing store to `clientWidth × devicePixelRatio` and re-centres vertically. Wide screens simply show more of the phrase — the glyph scale does not change. Height therefore has to be tall enough for the ink: the shipped phrases compose 200–350 world units high, and a word pairing the highest capital with the lowest descender (`D` and `g`) reaches 424. The CSS clamp is `280px, 60vh, 440px`; anything shorter crops tall phrases top and bottom, which is what a 340px ceiling used to do to every phrase carrying a capital and a descender.
 
 ## Screens and storage
 
@@ -155,11 +155,13 @@ Owns the `requestAnimationFrame` loop, pointer events, the camera, and all paint
 
 - `#/` — the ledger: wave count, "Start a wave", "Just write".
 - `#/ritual` — four steps: name the urge, rate it 0–10, trace a random phrase, rate it again, then log.
-- `#/write` — pick any phrase and trace it; nothing is recorded.
+- `#/write` — pick any phrase, or type a sentence of your own, and trace it; nothing is recorded.
 
 Routing is `location.hash` plus a `hashchange` listener, so the browser back button works on phones. The ritual's four steps are internal state, not routes.
 
 The tracing panel is a `<template>` cloned into whichever screen needs it, so the ritual and "just write" share one implementation. Only one is ever mounted; `unmountTracer()` cancels the frame loop and disconnects the observer.
+
+A typed sentence is held only in the input element: it is traced and then forgotten, never stored and never added to the phrase list. It is checked against `canCompose` first, since the dataset covers `a–z`, `A–Z`, `.` and the space between words, and `composePhrase` throws on anything else — so digits, commas and apostrophes are rejected in the UI rather than crashing the tracer.
 
 Waves are appended to `localStorage["urge-surfer.waves"]` as `{urge, before, after, phrase, at}`. No schema versioning yet — if the shape changes, old entries need handling at read time.
 

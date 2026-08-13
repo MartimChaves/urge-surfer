@@ -83,6 +83,10 @@ export function composePhrase(phrase, scale = GLYPH_SCALE) {
   return path;
 }
 
+/** Whether `composePhrase` can draw every character of `text`: any glyph in
+ *  the dataset, or the space between words. */
+export const canCompose = (text) => [...text].every((c) => c === ' ' || c in glyphs);
+
 /**
  * Append one word, returning the world-space x where its ink ended.
  *

@@ -89,7 +89,8 @@ button {
   padding: 0.25rem 0.75rem;
 }
 
-textarea {
+textarea,
+input[type="text"] {
   font: inherit;
   width: 100%;
   padding: 0.75rem;
@@ -97,8 +98,9 @@ textarea {
   border-radius: 0.75rem;
   background: var(--surface);
   color: inherit;
-  resize: vertical;
 }
+
+textarea { resize: vertical; }
 
 input[type="range"] {
   width: min(100%, 22rem);
@@ -124,6 +126,16 @@ input[type="range"] {
 
 .phrases button:hover { background: var(--surface); }
 
+#custom-phrase {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+#custom-phrase[hidden] { display: none; }
+
 /* --- tracing panel --- */
 
 .step,
@@ -147,7 +159,7 @@ input[type="range"] {
 canvas {
   display: block;
   width: 100%;
-  height: clamp(220px, 45vh, 340px);
+  height: clamp(280px, 60vh, 440px);
   background: var(--surface);
   border-radius: 1rem;
   color: var(--accent); /* read by the canvas as its ink colour */

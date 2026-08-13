@@ -2,6 +2,7 @@
 // in localStorage and nothing is ever sent anywhere.
 
 import { TracingCanvas } from './canvas.js';
+import { canCompose } from './composer.js';
 import { phrases, randomPhrase } from './phrases.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -86,29 +87,51 @@ for (const slider of $$('#ritual input[type=range]')) {
   slider.addEventListener('input', () => (output.textContent = slider.value));
 }
 
-// --- just write: pick any phrase and trace it, nothing recorded ---
+// --- just write: pick a phrase or type one, trace it, nothing recorded ---
 
 const writeHost = $('#write .tracer-host');
 const phraseList = $('#phrase-list');
+const custom = $('#custom-phrase');
+const customText = $('#custom-text');
+const customError = $('#custom-error');
+
+function startWriting(text) {
+  phraseList.hidden = true;
+  custom.hidden = true;
+  writeHost.hidden = false;
+  mountTracer(writeHost, text, showPhraseList);
+}
 
 phraseList.replaceChildren(...phrases.map((text) => {
   const button = document.createElement('button');
   button.className = 'link';
   button.textContent = text;
-  button.addEventListener('click', () => {
-    phraseList.hidden = true;
-    writeHost.hidden = false;
-    mountTracer(writeHost, text, showPhraseList);
-  });
+  button.addEventListener('click', () => startWriting(text));
   const item = document.createElement('li');
   item.append(button);
   return item;
 }));
 
+/** Trace whatever the user typed. It is never stored — leaving the screen
+ *  loses it, which is the point. */
+function writeTyped() {
+  const text = customText.value.trim();
+  if (!text) return;
+  customError.hidden = canCompose(text);
+  if (customError.hidden) startWriting(text);
+}
+
+$('#custom-go').addEventListener('click', writeTyped);
+customText.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') writeTyped();
+});
+
 function showPhraseList() {
   unmountTracer();
   writeHost.hidden = true;
   phraseList.hidden = false;
+  custom.hidden = false;
+  customError.hidden = true;
 }
 
 // --- routing ---
