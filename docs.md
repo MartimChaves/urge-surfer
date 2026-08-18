@@ -11,6 +11,9 @@ The product/design source of truth is `~/.claude/plans/the-goal-of-this-snappy-d
 A static web app. No build step, no bundler, no runtime dependencies.
 
 ```
+Dockerfile            static Caddy image; no application runtime
+compose.yaml          one-command local or public deployment
+config/production.js  production feature switches copied into the image
 index.html            every screen's markup, toggled with `hidden`
 styles.css            one fluid layout, light and dark
 src/
@@ -21,13 +24,16 @@ src/
   glyphs.json         cursive centerline data
   join.json           global join tuning — shared with the join editor
   pairs.json          hand-tuned joins for specific letter pairs
-  phrases.js          the phrase list
-test/                 node:test suites for composer.js and tracer.js
+  features.js          development feature switches; defaults on locally
+  phrases.js          the phrase list, and the deck that walks it
+server/
+  Caddyfile           TLS and static file serving
+test/                 node:test suites for composer.js, tracer.js and phrases.js
 tool/glyphdata.py     glyph loading/saving + the join maths, shared, no UI
 tool/glyph_editor.py  desktop editor for the letterforms
 tool/join_editor.py   desktop editor for how pairs of letters connect
 vendor/               letterpaths dataset (provenance) + Sacramento font (glyph editor overlay)
-assets/phrases/       JSON phrase library — reviewed content, not yet wired into the app
+assets/phrases/       JSON phrase library — reviewed content, read by src/phrases.js
 ```
 
 `package.json` exists only to mark `src/` and `test/` as ES modules so `node --test` can run them. There are no dependencies and nothing to install.
@@ -139,7 +145,7 @@ Sampling at even steps of `t` — what the Flutter version did — is not good e
 
 ### `tracer.js` — the pen
 
-The pen chases the finger at a constant `PEN_SPEED = 70` px/s. Moving the finger faster just leaves the pen trailing; that lag is the mechanic. `penSpeed = Infinity` turns it off (the "pen lag" toggle).
+The pen chases the finger at a constant `PEN_SPEED = 70` px/s. Moving the finger faster just leaves the pen trailing; that lag is the mechanic. `penSpeed = Infinity` turns it off (the development-only "pen lag" toggle).
 
 Progress (`index`) advances only while the pen passes within `8 * GLYPH_SCALE` of the *next* point, one point at a time, and never decreases. Straying off the path, or racing ahead and stopping, leaves progress where the pen last actually passed — you have to go back. Progress cannot cross a stroke boundary; `advanceStroke()` teleports the pen to the next stroke's first point, and the canvas gates that on where the user touched.
 
@@ -161,7 +167,7 @@ Owns the `requestAnimationFrame` loop, pointer events, the camera, and all paint
 
 `main.js` holds three screens, all present in `index.html` and toggled with `hidden`:
 
-- `#/` — the ledger: wave count, "Start a wave", "Just write".
+- `#/` — the ledger: wave count, "Start a wave", "Just write" in development.
 - `#/ritual` — four steps: name the urge, rate it 0–10, trace a random phrase, rate it again, then log.
 - `#/write` — pick any phrase, or type a sentence of your own, and trace it; nothing is recorded.
 
@@ -171,15 +177,22 @@ The tracing panel is a `<template>` cloned into whichever screen needs it, so th
 
 A typed sentence is held only in the input element: it is traced and then forgotten, never stored and never added to the phrase list. It is checked against `canCompose` first, since the dataset covers `a–z`, `A–Z`, `.` and the space between words, and `composePhrase` throws on anything else — so digits, commas and apostrophes are rejected in the UI rather than crashing the tracer.
 
-Waves are appended to `localStorage["urge-surfer.waves"]` as `{urge, before, after, phrase, at}`. No schema versioning yet — if the shape changes, old entries need handling at read time.
+Only the integer wave count is stored in `localStorage["urge-surfer.waves"]`. On first load after upgrading, an older array of `{urge, before, after, phrase, at}` records is replaced with its length, erasing those details while preserving the count.
 
 ## No network
 
-The trust claim is that the app talks to nothing after the page loads.
+The app makes no requests after the page loads. The integer wave count uses `localStorage["urge-surfer.waves"]`; the shuffled phrase deck uses `localStorage["urge-surfer.deck"]`. The urge text, ratings, phrase and timestamp are discarded rather than stored.
 
-`tool/check_no_network.sh` greps `index.html`, `styles.css` and `src/*.js` for absolute URLs, `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `RTCPeerConnection`, and `<form>`. It runs in CI on every push and pull request. `fetch` is forbidden outright — `glyphs.json` arrives through a static `import`, so nothing in the app needs it.
+`tool/check_no_network.sh` checks `index.html`, `styles.css` and `src/*.js` for absolute URLs and browser networking APIs. CI runs it on every push and pull request. This is a source-level guard, not a substitute for the browser security headers in the Caddy configuration.
 
-What this does not cover, and the README says so plainly: the server that hands you the page sees the request, and `localStorage` is not encrypted. Those are real regressions from the phone app, which shipped an encrypted database and declared no network permission at the OS level. A browser offers no equivalent of either.
+The Compose file has two explicit services:
+
+- `docker compose up dev --build` runs development mode at <http://localhost>, bind-mounts the working tree for immediate edits, and enables **Just write** plus the **pen lag** checkbox.
+- `docker compose up prod -d --build` builds immutable production assets, disables both development-only controls, publishes HTTP, HTTPS and HTTP/3, persists Caddy certificate/configuration data in named volumes, and restarts unless stopped.
+
+For a public deployment, clone the repository, point the `urgesurfer.surf` DNS records at the server, and run the production command. There is no Node service, database or writable application state. Update with `git pull` followed by the same command.
+
+For a native production installation, copy the public files to `/srv/urge-surfer/public`, replace `public/src/features.js` with `config/production.js`, set `SITE_ADDRESS` in Caddy's environment, install `server/Caddyfile`, validate it, and reload Caddy.
 
 ## Glyph data and the editors
 
@@ -233,11 +246,11 @@ Glyph work is **visual and subjective**. Expect a "longer descender on g, smooth
 
 ## Verification status
 
-- `node --test test/` — 21 tests, passing.
+- `node --test test/` — 30 tests, passing.
 - `python3 -m unittest tool.test_glyphdata` — 19 tests, passing (the composer cross-check needs node 20+ on `PATH`, and skips otherwise).
 - `bash tool/check_no_network.sh` — passing.
 - Manually driven in Chrome: full ritual flow, all four strokes of a phrase traced end to end, stroke gating, completion, camera settling, and rendering at both desktop and phone canvas widths.
 
 ## Not built yet
 
-Onboarding, multiple modules, money tracking, the ritual timer, a breathing pacer, ledger detail beyond the count, weekly check-ins, settings, and wiring `assets/phrases/` in place of the hardcoded list in `src/phrases.js`.
+Onboarding, multiple modules, money tracking, the ritual timer, a breathing pacer, ledger detail beyond the count, weekly check-ins, and settings.

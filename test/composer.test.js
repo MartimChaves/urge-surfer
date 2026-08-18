@@ -113,6 +113,36 @@ test('words are separated by a gap the pen cannot cross', () => {
   assert.ok(gap(path.points[start - 1], path.points[start]) > ADVANCE_THRESHOLD);
 });
 
+test('every word gap is the same width, measured on the ink', () => {
+  // Capital I ends its stroke at the bottom left of the letter, 24 units back
+  // from its own top right; spacing the next word from that exit point left
+  // "I can" all but touching while every other pair got the full gap.
+  const gaps = [];
+  for (const phrase of [...phrases, 'I can', 'F an', 'at ease', 'a I a']) {
+    const path = composePhrase(phrase);
+    let letter = 0;
+    const words = phrase.split(' ').filter(Boolean).map((word) => {
+      const xs = [];
+      for (let i = 0; i < word.length; i++, letter++) {
+        for (let p = path.letterStart[letter]; p <= path.letterEnd[letter]; p++) {
+          xs.push(path.points[p].x);
+        }
+      }
+      return { min: Math.min(...xs), max: Math.max(...xs), phrase };
+    });
+    for (let i = 1; i < words.length; i++) {
+      gaps.push({ width: words[i].min - words[i - 1].max, phrase });
+    }
+  }
+  const widest = gaps.reduce((a, b) => (a.width > b.width ? a : b));
+  const tightest = gaps.reduce((a, b) => (a.width < b.width ? a : b));
+  assert.ok(
+    widest.width - tightest.width < 1,
+    `word gaps run ${tightest.width.toFixed(1)} ("${tightest.phrase}") `
+    + `to ${widest.width.toFixed(1)} ("${widest.phrase}")`,
+  );
+});
+
 test('sampling within a stroke stays dense enough for the pen to advance', () => {
   for (const text of [...phrases, ALPHABET, ALPHABET.toUpperCase()]) {
     const path = composePhrase(text);

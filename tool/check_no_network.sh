@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fails if the app could talk to anything but the server it was loaded from.
+# Fails if the app could make a network request after the page has loaded.
 # See docs.md "No network" for what this does and does not prove.
 
 set -uo pipefail

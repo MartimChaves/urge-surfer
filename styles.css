@@ -42,6 +42,7 @@ body {
   padding: max(1.5rem, env(safe-area-inset-top)) 1.5rem 2rem;
 }
 
+[hidden] { display: none !important; }
 .screen[hidden] { display: none; }
 
 h1 { font-size: 1.5rem; font-weight: 500; letter-spacing: 0.02em; }

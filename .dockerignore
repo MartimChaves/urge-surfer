@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!index.html
+!styles.css
+!src/**
+!assets/**
+!server/Caddyfile
+
+!config/**

@@ -445,7 +445,7 @@ def compose_run(glyphs, keys, gap, pairs=None):
         trimmed = opener[:head + 1]
 
         if not exit_point:
-            offset = 0.0
+            offset = -min(x for x, _ in lead + points)
         elif lifted:
             # Nothing was cut, so there is no cut to place against — and these
             # letters' exits are not their rightmost ink. Measure from the ink,
