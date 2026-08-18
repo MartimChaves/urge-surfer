@@ -3,16 +3,33 @@
 
 import { TracingCanvas } from './canvas.js';
 import { canCompose } from './composer.js';
-import { phrases, randomPhrase } from './phrases.js';
+import { phrases, nextPhrase } from './phrases.js';
+import { JUST_WRITE, PEN_LAG_CONTROL } from './features.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
+const justWriteButton = document.querySelector('[data-go="#/write"]');
+if (JUST_WRITE) justWriteButton.hidden = false;
+else justWriteButton.remove();
 const STORAGE_KEY = 'urge-surfer.waves';
-const readWaves = () => JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
 
-function logWave(wave) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([...readWaves(), wave]));
+function readWaveCount() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '0');
+    const count = Array.isArray(saved) ? saved.length : saved;
+    if (!Number.isSafeInteger(count) || count < 0) return 0;
+    // Older versions stored full wave records. Preserve only their count and
+    // erase the urge text, ratings, phrase and timestamp on the first visit.
+    if (Array.isArray(saved)) localStorage.setItem(STORAGE_KEY, String(count));
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+function logWave() {
+  localStorage.setItem(STORAGE_KEY, String(readWaveCount() + 1));
 }
 
 // --- tracing panel, shared by the ritual and "just write" ---
@@ -23,10 +40,16 @@ let tracer = null;
  *  so the canvas can measure itself. */
 function mountTracer(host, phrase, onComplete) {
   unmountTracer();
-  host.replaceChildren($('#tracer-template').content.cloneNode(true));
-  $('.phrase', host).textContent = phrase;
-  tracer = new TracingCanvas($('canvas', host), phrase, onComplete);
-  $('.lag input', host).addEventListener('change', (e) => tracer.setLag(e.target.checked));
+  host.replaceChildren($("#tracer-template").content.cloneNode(true));
+  $(".phrase", host).textContent = phrase;
+  tracer = new TracingCanvas($("canvas", host), phrase, onComplete);
+  const lagControl = $(".lag", host);
+  if (PEN_LAG_CONTROL) {
+    lagControl.hidden = false;
+    $(".lag input", host).addEventListener("change", (e) => tracer.setLag(e.target.checked));
+  } else {
+    lagControl.remove();
+  }
 }
 
 function unmountTracer() {
@@ -37,7 +60,7 @@ function unmountTracer() {
 // --- ledger ---
 
 function showLedger() {
-  const count = readWaves().length;
+  const count = readWaveCount();
   $('#wave-count').textContent = count;
   $('#wave-label').textContent = count === 1 ? 'wave surfed' : 'waves surfed';
 }
@@ -56,30 +79,24 @@ function showStep(index) {
 }
 
 function startRitual() {
-  phrase = randomPhrase();
-  $('#urge-text').value = '';
-  for (const slider of $$('#ritual input[type=range]')) {
+  phrase = nextPhrase();
+  $("#urge-text").value = "";
+  for (const slider of $$("#ritual input[type=range]")) {
     slider.value = 5;
-    slider.dispatchEvent(new Event('input'));
+    slider.dispatchEvent(new Event("input"));
   }
   showStep(0);
 }
 
-$('#urge-next').addEventListener('click', () => {
-  if ($('#urge-text').value.trim()) showStep(1);
+$("#urge-next").addEventListener("click", () => {
+  if ($("#urge-text").value.trim()) showStep(1);
 });
 
-$('.primary', steps[1]).addEventListener('click', () => showStep(2));
+$(".primary", steps[1]).addEventListener("click", () => showStep(2));
 
-$('.primary', steps[3]).addEventListener('click', () => {
-  logWave({
-    urge: $('#urge-text').value.trim(),
-    before: Number($('#urge-before').value),
-    after: Number($('#urge-after').value),
-    phrase,
-    at: new Date().toISOString(),
-  });
-  location.hash = '#/';
+$(".primary", steps[3]).addEventListener("click", () => {
+  logWave();
+  location.hash = "#/";
 });
 
 for (const slider of $$('#ritual input[type=range]')) {
@@ -134,12 +151,14 @@ function showPhraseList() {
   customError.hidden = true;
 }
 
+if (!JUST_WRITE) $('#write').remove();
+
 // --- routing ---
 
 const ROUTES = {
   '#/': ['ledger', showLedger],
   '#/ritual': ['ritual', startRitual],
-  '#/write': ['write', showPhraseList],
+  ...(JUST_WRITE ? { '#/write': ['write', showPhraseList] } : {}),
 };
 
 function route() {

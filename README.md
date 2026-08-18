@@ -12,20 +12,32 @@ Early development. Formerly a Flutter phone app; now a plain HTML/CSS/JavaScript
 
 ## Running it
 
-Any static file server will do. From the repository root:
+### Development
 
 ```sh
-python3 -m http.server 8000
+git clone <repository-url>
+cd urge-surfer
+docker compose up dev --build
 ```
 
-Then open <http://localhost:8000>. Opening `index.html` straight off disk does **not** work — browsers refuse to load ES modules over `file://`.
+Open **<http://localhost>** to play with the app. Development mode live-mounts the source tree, so edits appear after a browser refresh. It includes **Just write** and the **pen lag** checkbox. Stop it with `docker compose down`.
 
-Deploying is a matter of copying `index.html`, `styles.css` and `src/` onto any static host.
+Without Docker, run `python3 -m http.server 8000` and open <http://localhost:8000>. Opening `index.html` directly from disk does not work because browsers refuse ES modules over `file://`.
+
+### Production
+
+`SITE_ADDRESS` already defaults to `urgesurfer.surf`. Point that domain at the server, then run:
+
+```sh
+docker compose up prod -d --build
+```
+
+Production removes both development-only controls. Caddy obtains and renews HTTPS automatically. Run `docker compose down` before switching between development and production because both use port 80.
 
 ## Principles
 
-- **Local-first.** Your waves are stored in your browser's `localStorage` and never leave the device. The app makes no network requests after the page loads.
-- **No accounts. No telemetry. No ads.** The app does not know who you are, and is not trying to find out.
+- **Local-first.** Only your wave count is stored in your browser's `localStorage`. What you typed, how you rated the urge and which phrase you traced are discarded and never sent anywhere.
+- **No accounts. No ads.** The app does not know who you are, and is not trying to find out.
 - **Open source under [AGPL-3.0](LICENSE).** Privacy claims need to be verifiable. This means anyone — you, a friend, an auditor — can read the source and confirm what the app does and doesn't do.
 - **Harm reduction over abstinence.** No "X days clean" counters. Every wave you surf is a win regardless of what came before or after.
 - **Self-compassion over affirmations.** Phrases follow Kristin Neff's framework (mindfulness, common humanity, self-kindness). Generic "you are worthy" affirmations can backfire for people with low self-esteem; we do not use them.
@@ -33,7 +45,7 @@ Deploying is a matter of copying `index.html`, `styles.css` and `src/` onto any 
 ## Threat model
 
 What this app protects:
-- Your history stays in `localStorage` under the origin you loaded the page from. It is never uploaded, and there is no cloud sync, analytics, or crash reporting. `tool/check_no_network.sh` proves the source contains no networking calls and references no remote hosts; CI runs it on every change.
+- Your wave count stays in `localStorage` under the origin you loaded the page from. It is never uploaded, and there is no cloud sync, analytics, or crash reporting. `tool/check_no_network.sh` proves the source contains no networking calls and references no remote hosts; CI runs it on every change.
 - Browser profile sync (Chrome, Firefox) does not sync `localStorage`, so your waves do not follow you to other devices.
 
 What this app does **not** protect against, and where a web app is genuinely weaker than the phone app it replaces:
@@ -45,7 +57,7 @@ What this app does **not** protect against, and where a web app is genuinely wea
 
 ## Contributing
 
-Contributions are welcome — code, translations, phrase reviews, and especially clinical or peer-support input on the phrase library. See `CONTRIBUTING.md` (to be added).
+Contributions are welcome — code, translations, phrase reviews, and especially clinical or peer-support input on the phrase library. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The phrase library is the highest-leverage content artifact. Phrases are reviewed against Kristin Neff's self-compassion framework and the Wood, Perunovic & Lee (2009) self-affirmation backfire criteria before any release. Linguistic and cultural translation is a real contribution category — not a mechanical translation task.
 

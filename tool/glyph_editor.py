@@ -130,9 +130,9 @@ class GlyphEditor:
 
     @staticmethod
     def _deep_copy_glyph(glyph):
-        adv, strokes, lead_out, lift_after = glyph
+        adv, strokes, lead_out, lift_after, join_from_second = glyph
         return [adv, [[[p[:] for p in bez] for bez in beziers] for beziers in strokes],
-                lead_out, lift_after]
+                lead_out, lift_after, join_from_second]
 
     @classmethod
     def _deep_copy(cls, glyphs):
@@ -416,6 +416,8 @@ class GlyphEditor:
     # --- Pick helpers ---
 
     def _hit_test_control_point(self, event):
+        """The nearest control point within the hit radius as
+        `((s, b, p), distance)`, or `(None, inf)` if the click missed."""
         strokes = self.glyphs_working[self.current_key][1]
         best = None
         best_dist = HIT_R
@@ -427,7 +429,7 @@ class GlyphEditor:
                     if d < best_dist:
                         best_dist = d
                         best = (s_idx, b_idx, p_idx)
-        return best
+        return best, (best_dist if best else math.inf)
 
     def _linked_anchors(self, s, b, p):
         if p not in (0, 3):
@@ -461,7 +463,18 @@ class GlyphEditor:
         if self.mode == MODE_ADD_ANCHOR:
             self._do_add_anchor(event)
             return
-        hit = self._hit_test_control_point(event)
+        hit, hit_dist = self._hit_test_control_point(event)
+        cut_dist = self._hit_test_lead_out(event)
+        # Whichever is nearer, with ties going to the cut marker: at lead-out
+        # 1.0 it sits exactly on the joining stroke's last anchor, which is
+        # where every letter starts, so otherwise it could never be dragged off
+        # the end. Capital G is one such letter.
+        if cut_dist < math.inf and cut_dist <= hit_dist:
+            self.selected = None
+            self.drag_state = {"type": "lead_out"}
+            self._update_status()
+            self._redraw()
+            return
         if hit is not None:
             self.selected = hit
             s, b, p = hit
@@ -472,12 +485,6 @@ class GlyphEditor:
                 }
             else:
                 self.drag_state = {"type": "point", "targets": [(s, b, p)]}
-            self._update_status()
-            self._redraw()
-            return
-        if self._hit_test_lead_out(event):
-            self.selected = None
-            self.drag_state = {"type": "lead_out"}
             self._update_status()
             self._redraw()
             return
@@ -749,7 +756,7 @@ class GlyphEditor:
 
     def _redraw(self):
         self.canvas.delete("all")
-        adv, strokes, _lead_out, _lift_after = self.glyphs_working[self.current_key]
+        adv, strokes = self.glyphs_working[self.current_key][:2]
         w = self.canvas.winfo_width() or 1100
         h = self.canvas.winfo_height() or 800
 
@@ -815,8 +822,11 @@ class GlyphEditor:
 
     def _lead_out_points(self):
         """The joining stroke, sampled the way the app samples it — the cut
-        belongs to whichever stroke carries on into the next letter."""
+        belongs to whichever stroke carries on into the next letter. Empty when
+        the letter lifts after, since then there is no hand-over to cut."""
         glyph = self.glyphs_working[self.current_key]
+        if glyph[3]:
+            return []
         s = join_stroke(glyph)
         strokes = glyph[1]
         return _sample_stroke(strokes[s]) if len(strokes) > s and strokes[s] else []
@@ -835,12 +845,14 @@ class GlyphEditor:
                                 fill="#ff9800", outline="black", width=1)
 
     def _hit_test_lead_out(self, event):
+        """Distance from the click to the cut marker, or `inf` if it missed."""
         points = self._lead_out_points()
         if len(points) < 2:
-            return False
+            return math.inf
         cut = cut_index(points, self.glyphs_working[self.current_key][2])
         cx, cy = self._to_canvas(*points[cut])
-        return (cx - event.x) ** 2 + (cy - event.y) ** 2 <= HIT_R ** 2
+        d = math.hypot(cx - event.x, cy - event.y)
+        return d if d <= HIT_R else math.inf
 
     def _drag_lead_out(self, event):
         """Move the cut along the stroke, searched near where it already is.

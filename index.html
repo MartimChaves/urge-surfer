@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#6750a4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#141018" media="(prefers-color-scheme: dark)">
 <title>Urge Surfer</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
 <script type="module" src="src/main.js"></script>
 </head>
@@ -17,7 +18,7 @@
     <p class="count" id="wave-count">0</p>
     <p class="muted" id="wave-label">waves surfed</p>
     <button class="primary" data-go="#/ritual">Start a wave</button>
-    <button class="link" data-go="#/write">Just write</button>
+    <button class="link" data-go="#/write" hidden>Just write</button>
   </section>
 
   <section id="ritual" class="screen" hidden>
@@ -66,7 +67,7 @@
 <template id="tracer-template">
   <p class="phrase"></p>
   <canvas></canvas>
-  <label class="lag"><input type="checkbox" checked> pen lag</label>
+  <label class="lag" hidden><input type="checkbox" checked> pen lag</label>
 </template>
 
 </body>

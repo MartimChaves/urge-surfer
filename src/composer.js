@@ -74,7 +74,12 @@ export function composePhrase(phrase, scale = GLYPH_SCALE) {
     letterEnd: [],
     letterCenterX: [],
   };
-  let cursorX = 0;   // world coords, like everything else past this point
+  // World coords from here on. Words are spaced ink to ink, not pen to pen:
+  // where a word's stroke ends is not always how far right it reached, and
+  // capital I is the clearest case — it ends its stroke at the bottom left of
+  // the letter, 24 units back from its own top right. Spending the gap from
+  // there left "I can" all but touching.
+  let cursorX = 0;
   for (const word of phrase.split(' ').filter(Boolean)) {
     if (path.strokeStart.length) cursorX += SPACE_WIDTH * scale;
     path.strokeStart.push(path.points.length);
@@ -88,7 +93,12 @@ export function composePhrase(phrase, scale = GLYPH_SCALE) {
 export const canCompose = (text) => [...text].every((c) => c === ' ' || c in glyphs);
 
 /**
- * Append one word, returning the world-space x where its ink ended.
+ * Append one word. `startX` is where its leftmost ink lands, and the return
+ * value is how far right its ink reached — both measured on the ink rather
+ * than on the pen, so that `composePhrase` can space words by the gap the
+ * reader actually sees. Both measure the word body only; a final t's crossbar
+ * reaches over the space, as it does in handwriting, rather than pushing the
+ * next word 17 units further out than every other pair.
  *
  * Two passes, matching how cursive is actually written: first the word body
  * (each letter's main stroke, joined into one continuous stroke), then back
@@ -125,6 +135,7 @@ function appendWord(word, scale, startX, path) {
   let exitDir = null;   // and the direction it was travelling in
   let lifted = false;   // the letter before this one lifted the pen after itself
   let prevRight = 0;    // and how far right its ink reached
+  let wordRight = -Infinity;   // how far right the whole word has reached
 
   for (let i = 0; i < characters.length; i++) {
     const glyph = glyphs[characters[i]];
@@ -157,7 +168,7 @@ function appendWord(word, scale, startX, path) {
     // connecting stroke, and there is no connecting stroke here to make room
     // for, so spending it leaves a hole in the middle of the word.
     const ink = lead ? [...lead, ...points] : points;
-    const offset = !exit ? startX
+    const offset = !exit ? startX - Math.min(...ink.map((p) => p.x))
       : lifted ? prevRight + join.liftGap * scale - Math.min(...ink.map((p) => p.x))
         : exit.x + (into ? into.dx : join.gap) * scale - ink[0].x;
     const place = (from) => from.map((point) => ({ x: point.x + offset, y: point.y }));
@@ -181,6 +192,7 @@ function appendWord(word, scale, startX, path) {
     exitDir = direction(points.at(-2), exit);
     lifted = liftsAfter;
     prevRight = Math.max(...(lead ? [...lead, ...points] : points).map((p) => p.x));
+    wordRight = Math.max(wordRight, prevRight);
   }
 
   for (const [x, stroke] of deferred) {
@@ -189,7 +201,7 @@ function appendWord(word, scale, startX, path) {
     for (const point of points) point.x += x;
     path.points.push(...points);
   }
-  return exit.x;
+  return wordRight;
 }
 
 /** Where along a stroke a hand-tuned cut falls. `at` runs 0 (the stroke's
