@@ -71,6 +71,8 @@ Sacramento reference font: [SIL Open Font License 1.1](vendor/sacramento/OFL.txt
 
 ## Acknowledgements
 
+Urge Surfer's handwriting system was inspired by Robin Linacre's [letterpaths](https://github.com/RobinL/letterpaths) project. The editable lowercase centerlines were initially seeded from its MIT-licensed glyph data.
+
 Mechanically informed by:
 - Urge surfing — Bowen, Marlatt, and Mindfulness-Based Relapse Prevention research.
 - GamblingLess: Curb Your Urge (Deakin University, 2021) — the closest existing tool, which validated several core mechanics.
@@ -78,6 +80,6 @@ Mechanically informed by:
 - Peter Gollwitzer's research on implementation intentions ("if-then" plans).
 - Mueller & Oppenheimer (2014) and James & Engelhardt (2012) on the cognitive effects of handwriting versus typing.
 
-The editable lowercase centerlines are seeded from the MIT-licensed letterpaths dataset. Brian J. Bonislawsky's Sacramento typeface is distributed under the SIL Open Font License 1.1 and is vendored as an aligned reference overlay for the glyph editor.
+Brian J. Bonislawsky's Sacramento typeface is distributed under the SIL Open Font License 1.1 and is vendored as an aligned reference overlay for the glyph editor.
 
 This project is not affiliated with any of the researchers, institutions, or projects above.
